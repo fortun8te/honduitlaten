@@ -18,7 +18,7 @@ class Base(unittest.TestCase):
         for k in ("send", "edit", "delete", "api", "now"):
             self.addCleanup(setattr, b, k, getattr(b, k))
         def send(chat, text, markup=None, silent=False):
-            self.sent.append((chat, text, markup, silent)); return 100 + len(self.sent)
+            self.sent.append((chat, text, markup, silent, b.now().date())); return 100 + len(self.sent)
         b.send = send
         b.edit = lambda chat, msg, text, rows=(): self.edits.append((chat, msg, text, b.kbd(rows)))
         b.delete = lambda chat, msg: self.calls.append(("delete", chat, msg))
@@ -176,6 +176,65 @@ class Start(Base):
         self.db.execute("DELETE FROM members WHERE id=?", (C,))
         self.text(3, "/start w_None")
         self.assertNotIn(3, b.walkers(self.db))
+
+class Random(Base):
+    def test_three_weeks_of_random_taps(self):
+        """Both brothers tapping anything at any time never breaks the rules."""
+        import collections, random
+        rnd, kinds = random.Random(7), ["d", "k", "g", "b", "t", "e"]
+        for i in range(21):
+            day = b.timedelta(days=i) + T
+            for h, m in [(12, 0), (18, 30), (19, 10), (21, 0), (21, 45), (22, 15), (23, 30)]:
+                self.tick(day, h, m)
+                for _ in range(rnd.randint(0, 3)):
+                    d = day + b.timedelta(days=rnd.choice([0, 0, 1, 3, 13, -1]))
+                    self.tap(rnd.choice([M, C]), f"{rnd.choice(kinds)}:{d}:{rnd.choice(list(b.CHORES))}")
+                    self.assertNotEqual(self.answer(), "Oeps, probeer nog eens")
+                    self.assertEqual(sum(self.score()), 0)
+            self.tick(day + b.timedelta(days=1), 3)
+            for r in self.db.execute("SELECT * FROM tasks WHERE payback=1").fetchall():
+                self.assertNotEqual(b.rota(self.db, date.fromisoformat(r["day"])), r["who"])
+        loud = collections.Counter((s[0], s[4]) for s in self.sent if not s[3])
+        self.assertLessEqual(max(loud.values()), b.MAX_PINGS)
+
+class Upgrade(Base):
+    OLD = """
+    CREATE TABLE members(id INTEGER PRIMARY KEY, name TEXT, role TEXT, joined INTEGER, lang TEXT DEFAULT 'en');
+    CREATE TABLE off(id INTEGER, day TEXT, PRIMARY KEY(id, day));
+    CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE nights(day TEXT, chore TEXT DEFAULT 'dogs', walker INTEGER, status TEXT, cant TEXT DEFAULT '',
+                        msg INTEGER, done_at TEXT, PRIMARY KEY(day, chore));
+    INSERT INTO members VALUES(1, 'Michael', 'walker', 1760000000, 'en'), (2, 'Christian', 'walker', 1760000001, 'nl'),
+                              (3, 'Mum', 'parent', 1760000002, 'en');
+    INSERT INTO kv VALUES('offset', '4242');
+    """
+    def file_db(self, script=""):
+        import os, sqlite3, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "dogbot.db")
+        old = sqlite3.connect(path); old.executescript(script); old.close()
+        return path
+    def test_old_database_upgrades_with_backup(self):
+        import os
+        path = self.file_db(self.OLD)
+        db = b.connect(path); self.addCleanup(db.close)
+        self.assertTrue(os.path.exists(path + ".bak-v0"))
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], len(b.MIGRATIONS))
+        self.assertEqual((b.walkers(db), b.kv(db, "offset")), ([M, C], "4242"))
+        self.db = db
+        self.tick(T, 3, 30); self.tick(T, 18, 30)  # yesterday was the old version: not forgotten
+        self.assertEqual((len(self.pings(b.rota(db, T))), self.score()), (1, (0, 0)))
+    def test_second_start_changes_nothing(self):
+        import os
+        path = self.file_db()
+        b.connect(path).close(); b.connect(path).close()
+        self.assertEqual([f for f in os.listdir(os.path.dirname(path)) if ".bak" in f], [])
+    def test_restart_mid_evening_sends_nothing_twice(self):
+        path = self.file_db(self.OLD)
+        self.db = b.connect(path)
+        self.tick(T, 18, 30); self.tick(T, 21, 45)
+        self.db.close(); self.db = b.connect(path); self.addCleanup(self.db.close)
+        self.tick(T, 21, 50); self.tick(T, 22)
+        self.assertEqual(len(self.pings(b.rota(self.db, T))), 2)
 
 class Infra(Base):
     def test_tap_survives_failed_answer(self):

@@ -9,4 +9,6 @@ Use: the owner taps Start and sends the invite with 📤. ☰ Menu shows tonight
 
 Points: doing the other's chore is +1 for you and -1 for him. A chore still open at 03:00 is -1 for whoever had it and +1 for the other. Whoever is behind automatically gets the other's next chores, from two days out, until it's even; those can't be given away. If both can't, someone else does it and nobody gets points.
 
-Upgrading from the old version: the old tables (nights, off, overrides, weekmsg) stay in the database unused, and parents get nothing for now.
+Updating: stop, `git pull`, start. The database upgrades itself on start and keeps a copy of the old file as `dogbot.db.bak-v<n>`. Cards, pings and points live in the database, so a restart mid-evening sends nothing twice. Schema changes go in a new entry at the end of `MIGRATIONS`; never edit an old one.
+
+Upgrading from the old version: the old tables (nights, off, overrides, weekmsg) stay in the database unused, evenings before the first run don't count, and parents get nothing for now.

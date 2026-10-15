@@ -1,5 +1,5 @@
 """Honduitlaatbot: evening rota for two brothers. Telegram DMs, buttons only, long polling, SQLite."""
-import fcntl, html, json, os, secrets, sqlite3, sys, time, urllib.error, urllib.parse, urllib.request
+import fcntl, html, json, os, secrets, shutil, sqlite3, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -18,17 +18,28 @@ DB = os.environ.get("DOGBOT_DB", os.path.join(os.path.dirname(os.path.abspath(__
 
 # ---------- storage ----------
 
-def connect(path=DB):
-    db = sqlite3.connect(path)
-    db.row_factory = sqlite3.Row
-    db.executescript("""
+MIGRATIONS = [  # append only: each runs once, in order; PRAGMA user_version remembers how far a database got
+    """
     CREATE TABLE IF NOT EXISTS members(id INTEGER PRIMARY KEY, name TEXT, role TEXT, joined INTEGER, lang TEXT DEFAULT 'nl');
     CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
     CREATE TABLE IF NOT EXISTS tasks(day TEXT, chore TEXT, who INTEGER, payback INTEGER DEFAULT 0, done_at TEXT,
                                      missed INTEGER DEFAULT 0, PRIMARY KEY(day, chore));
     CREATE TABLE IF NOT EXISTS points(day TEXT, chore TEXT, uid INTEGER, n INTEGER);
     CREATE TABLE IF NOT EXISTS cards(uid INTEGER, day TEXT, msg INTEGER, pings INTEGER, PRIMARY KEY(uid, day));
-    """)
+    """,
+]
+
+def connect(path=DB):
+    """Open the database and bring it up to date. An existing file is copied to <path>.bak-v<version> first."""
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    have = db.execute("PRAGMA user_version").fetchone()[0]
+    if have < len(MIGRATIONS) and path != ":memory:" and os.path.getsize(path):
+        shutil.copyfile(path, f"{path}.bak-v{have}")
+    for version, sql in enumerate(MIGRATIONS[have:], have + 1):
+        db.executescript(sql)
+        db.execute(f"PRAGMA user_version={version}")
+    db.commit()
     return db
 
 def kv(db, k, v=None):
