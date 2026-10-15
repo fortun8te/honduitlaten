@@ -615,6 +615,12 @@ class Language(Base):
         self.tap(1, "plan")
         self.assertTrue(self.sent[-1][1].startswith("<b>week 15–21 oct</b>"))
         self.assertTrue(all(len(x["callback_data"].encode()) <= 64 for r in b.week_view(self.db, T)[1]["inline_keyboard"] for x in r))
+    def test_button_colours(self):
+        k = b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"][0]
+        self.assertEqual([(x["callback_data"], x["style"]) for x in k], [("done:dogs", "success"), ("cant:dogs", "danger")])
+        self.assertEqual(b.plan_button("en")["style"], "primary")
+        self.assertNotIn("style", b.buttons(self.db, 1, "cancel")["inline_keyboard"][0][0])  # neutral stays neutral
+        self.assertEqual(b.buttons(self.db, 1, "confirm", "cancel")["inline_keyboard"][0][0]["style"], "success")
     def test_word_date_range(self):
         for s in ("away 20 to 27 oct", "away 20-27 oct", "weg 20 t/m 27 okt"):
             d = b.parse_days(s, date(2026, 10, 15))

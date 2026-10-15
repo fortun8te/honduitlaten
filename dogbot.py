@@ -419,9 +419,20 @@ def tell_parents(db, key, markup=None, **kw):
         r = say(db, p["id"], key, markup, **kw)
         log("parent", p["id"], key, {False: "BLOCKED", None: "FAILED"}.get(r, "sent"))
 
+STYLE = {  # Telegram button colours: success = go, danger = stop, primary = pick/navigate
+    "done": "success", "cant": "danger", "confirm": "success", "off": "danger", "walk": "primary",
+    "accept": "success", "no": "danger", "pcover": "success", "plan": "primary",
+    "noff": "danger", "nin": "success", "ntake": "success", "nswap": "primary",
+}
+
+def btn(lang, key, data):
+    """One inline button: label from S, colour from STYLE (none for neutral keys like nah / back)."""
+    b = {"text": tr(lang, "b_" + key), "callback_data": data}
+    return {**b, "style": STYLE[key]} if key in STYLE else b
+
 def buttons(db, uid, *keys):
     lang = lang_of(db, uid)
-    return {"inline_keyboard": [[{"text": tr(lang, "b_" + k), "callback_data": k} for k in keys]]}
+    return {"inline_keyboard": [[btn(lang, k, k) for k in keys]]}
 
 def other_walker(db, uid):
     return next((m["id"] for m in members(db, "walker") if m["id"] != uid), None)
@@ -532,10 +543,10 @@ def K(key, chore):
 
 def chore_buttons(db, uid, chore):
     lang = lang_of(db, uid)
-    return {"inline_keyboard": [[{"text": tr(lang, "b_" + k), "callback_data": f"{k}:{chore}"} for k in ("done", "cant")]]}
+    return {"inline_keyboard": [[btn(lang, k, f"{k}:{chore}") for k in ("done", "cant")]]}
 
 def plan_button(lang):
-    return {"text": tr(lang, "b_plan"), "callback_data": "plan"}
+    return btn(lang, "plan", "plan")
 
 def say_on(db, uid, day, chore, key="on", **kw):
     """Tonight's chore message; the first one notes when both walkers are marked off."""
@@ -585,7 +596,7 @@ def tick(db, t):
             kv(db, f"late_{chore}_{t.date()}", "1")
             for p in members(db, "parent"):
                 say(db, p["id"], K("late", chore), {"inline_keyboard": [[
-                    {"text": tr(lang_of(db, p["id"]), "b_pcover"), "callback_data": f"pcover:{chore}:{t.date()}"}]]})
+                    btn(lang_of(db, p["id"]), "pcover", f"pcover:{chore}:{t.date()}")]]})
     prune(db, t)
 
 def pass_night(db, n, uid, chat=None, msg=None, answer=None):
