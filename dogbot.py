@@ -851,15 +851,13 @@ def on_start(db, u, arg):
     """Start joins people on WALKER_IDS / PARENT_IDS. Anyone else gets the private note."""
     uid, first = u["id"], u.get("first_name") or "?"
     lang = "nl" if (u.get("language_code") or "").startswith("nl") else "en"
-    if role_of(db, uid): return say(db, uid, "already_in")
+    if role_of(db, uid): return open_week(db, uid)
     role = "walker" if uid in WALKER_IDS else "parent" if uid in PARENT_IDS else None
     if not role: return send(uid, tr(lang, "private"))
     db.execute("INSERT INTO members(id, name, role, joined, lang) VALUES(?,?,?,?,?)",
                (uid, first, role, int(time.time()), lang)); db.commit()
-    if role == "parent":
-        say(db, uid, "hi_parent")
-    else:
-        send(uid, tr(lang, "hi_walker", name=first), {"inline_keyboard": [[plan_button(lang)]]})
+    hi = tr(lang, "hi_walker", name=first) if role == "walker" else tr(lang, "hi_parent")
+    send(uid, hi, {"inline_keyboard": [[plan_button(lang)]]})
     for m in members(db, "walker") + (members(db, "parent") if role == "walker" else []):
         if m["id"] != uid: say(db, m["id"], "joined", name=first)
 
@@ -869,32 +867,14 @@ def on_text(db, msg):
     uid = u["id"]
     if msg["chat"]["type"] != "private": return
     if text.startswith("/start"): return on_start(db, u, text[6:].strip())
-    role = role_of(db, uid)
-    if not role: return send(uid, tr("en", "private"))
-    lang, today = lang_of(db, uid), now().date()
-    if text == "/lang": return send(uid, *lang_view(lang))
-    if text == "/week": return open_week(db, uid)
-    if text.startswith("/"): return say(db, uid, "commands")
-    if role != "walker": return say(db, uid, "hi_parent")
-    days = parse_days(text, today)
-    if not days: return say(db, uid, "huh")
-    days = [d for d in days if d < today + timedelta(days=AHEAD)]
-    if not days: return say(db, uid, "too_far")
-    o = other_walker(db, uid)
-    kind, target = intent(text, uid, o, name(db, o) if o else "")
-    if kind == "off": return preview(db, uid, days, [], uid)
-    if kind == "walk": return preview(db, uid, [], days, target)
-    if len(days) > 7: return say(db, uid, "huh")
-    ask_day(db, uid, {"type": "ask", "target": uid, "off": [], "walk": [], "days": [d.isoformat() for d in days]})
+    if not role_of(db, uid): return send(uid, tr("en", "private"))
+    open_week(db, uid)  # buttons only: any typed text just shows the plan
 
 def setup():
-    """One-off bot profile: name and commands (en + nl)."""
+    """One-off bot profile: name, and no typed command menu (buttons only)."""
     log("bot", api("getMe")["username"])
     api("setMyName", name="Honduitlaten")
-    for lang, cmds in [(None, ("plan", "language")), ("nl", ("planning", "taal"))]:
-        extra = {"language_code": lang} if lang else {}
-        cmd = [{"command": c, "description": d} for c, d in zip(("week", "lang"), cmds)]
-        api("setMyCommands", commands=cmd, **extra)
+    api("deleteMyCommands")
 
 LOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dogbot.lock")
 

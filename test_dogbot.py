@@ -105,18 +105,6 @@ class Round4(Base):
         self.assertEqual((r[0], r[-1], len(r)), (date(2026, 12, 30), date(2027, 1, 2), 4))
         r = b.parse_days("not 28-3 jan", T)
         self.assertEqual((r[0], r[-1], len(r)), (date(2026, 12, 28), date(2027, 1, 3), 7))
-    def test_long_unclear_is_huh(self):
-        self.text(1, "20-30 oct")
-        self.assertEqual(self.sent[-1][1], 'didn\'t get that, try "not fri"')
-    def test_preview_months_when_spanning(self):
-        b.now = lambda: self.at(date(2026, 10, 25), 12)
-        self.text(1, "not 31 oct - 1 nov")
-        self.assertEqual(self.sent[-1][1], "off: Sat 31 Oct, Sun 1 Nov")
-    def test_two_weeks_max(self):
-        self.text(1, "away 30 oct")
-        self.assertEqual(self.sent[-1][1], "max 2 weeks ahead")
-        self.tap(1, "noff:2026-10-29:1")
-        self.assertEqual((self.answers[-1], b.is_off(self.db, 1, D(29))), ("that one's old", False))
     def test_lock_single_instance(self):
         import fcntl, tempfile
         path = tempfile.mktemp()
@@ -262,10 +250,7 @@ class Round7(Base):
         b.on_start(db, {"id": 5, "first_name": "M"}, "")
         self.assertEqual((b.role_of(db, 5), b.role_of(db, 8)), ("walker", "parent"))
         b.on_start(db, {"id": 8, "first_name": "Mum"}, "")
-        self.assertEqual(self.sent[-1], (8, "you're already in, /week shows the plan"))
-    def test_unknown_commands(self):
-        self.text(2, "/nope"); self.text(2, "/foo"); self.text(3, "/bar")
-        self.assertEqual([x[1] for x in self.sent], ["/week · /lang"] * 3)
+        self.assertTrue(self.sent[-1][1].startswith("<b>week"))  # already in: the plan, no typed reply
     def test_walker_welcome(self):
         db = b.connect(":memory:")
         self.addCleanup(setattr, b, "WALKER_IDS", b.WALKER_IDS)
@@ -432,11 +417,6 @@ class Night(Base):
         b.send = lambda chat, text, markup=None, **k: self.sent.append((chat, text)) or 300
         b.tick(self.db, self.at(T, 21, 46))
         self.assertEqual(self.dogs(), [(1, "🐕 dogs are yours tonight")])
-    def test_off_tonight_passes_live_message(self):
-        self.night(T, 1, "on", 7)
-        self.text(1, "not tonight"); self.tap(1, "confirm", msg=100 + len(self.sent))
-        self.assertIn((1, 7, "passed to Christian"), self.edits)
-        self.assertEqual(b.night(self.db, T)["walker"], 2)
     def test_resend_if_crashed_before_sent(self):
         self.night(T, 1, "on")  # row written, msg never sent
         b.tick(self.db, self.at(T, 22, 0))
@@ -504,50 +484,6 @@ class Night(Base):
 
 class Chat(Base):
     def last(self): return 100 + len(self.sent)
-    def test_off_day_preview(self):
-        self.text(2, "not fri")
-        self.assertEqual(self.sent[-1], (2, "off: Fri 16"))
-        self.assertEqual(self.plan(2)[1], 2)  # not saved yet
-        self.tap(2, "confirm", msg=self.last())
-        self.assertEqual((self.edits[-1][2], self.plan(2)[1]), ("👍 saved", 1))
-    def test_claim_confirm(self):
-        self.off(2, D(18))
-        self.text(1, "he does the weekend")
-        self.assertEqual(self.sent[-1][1], "Christian walks: Sat 17, Sun 18")
-        self.tap(1, "confirm", msg=self.last())
-        self.assertEqual(self.sent[-1], (2, "Michael asks: can you take Sat 17?"))  # Sun skipped, he's off
-        self.assertEqual(self.plan(3)[2], 1)  # nothing until he accepts
-        self.tap(2, "accept", msg=self.last())
-        self.assertEqual(self.plan(3)[2], 2)
-    def test_unclear_asks(self):
-        self.text(1, "fri")
-        self.assertEqual(self.sent[-1][1], "Fri 16: off or walking?")
-        m = self.last()
-        self.tap(1, "walk", msg=m)
-        self.assertEqual(self.edits[-1][2], "Michael walks: Fri 16")
-        self.tap(1, "confirm", msg=m)
-        self.assertEqual(self.plan(2), [1, 1])
-    def test_intent(self):
-        i = lambda s: b.intent(s, 1, 2, "Christian")
-        self.assertEqual([i("I can do mon but not tue"), i("ik kan vrijdag wel lopen"), i("kan vrijdag")],
-                         [(None, None)] * 3)
-        self.assertEqual([i("kan niet vrijdag"), i("he does sat"), i("I do mon")], [("off", 1), ("walk", 2), ("walk", 1)])
-        self.assertEqual(b.parse_days("vrij", T), [])
-    def test_mixed_asks_per_day(self):
-        self.text(1, "I can do mon but not tue")
-        m = self.last()
-        self.assertEqual(self.sent[-1][1], "Mon 19: off or walking?")
-        self.tap(1, "walk", msg=m)
-        self.assertEqual(self.edits[-1][2], "Tue 20: off or walking?")
-        self.tap(1, "off", msg=m)
-        self.assertEqual(self.edits[-1][2], "off: Tue 20\nMichael walks: Mon 19")
-    def test_cancel_then_stale(self):
-        self.text(1, "ik doe vrijdag")
-        m = self.last()
-        self.tap(1, "cancel", msg=m)
-        self.assertEqual((self.edits[-1][2], self.plan(2)[1]), ("cancelled", 2))
-        self.tap(1, "confirm", msg=m)
-        self.assertEqual(self.answers[-1], "that one's old")
     def test_parent_join(self):
         self.addCleanup(setattr, b, "PARENT_IDS", b.PARENT_IDS)
         b.PARENT_IDS = [9]
@@ -555,17 +491,7 @@ class Chat(Base):
         self.assertIn((9, b.tr("en", "hi_parent")), self.sent)
         self.assertIn((1, "Dad joined"), self.sent)
         self.assertNotIn((3, "Dad joined"), self.sent)  # parents don't hear about parents
-    def test_invite_is_gone(self):
-        self.text(1, "/invite")  # just an unknown command now
-        self.assertEqual(self.sent[-1], (1, "/week · /lang"))
-
 class Language(Base):
-    def test_toggle_and_dutch(self):
-        self.text(2, "/lang")
-        self.tap(2, "lang:nl")
-        self.assertEqual(self.edits[-1][2], "Taal")
-        self.text(2, "kan niet vrijdag")  # parser stays bilingual
-        self.assertEqual(self.sent[-1], (2, "kan niet: Vr 16"))
     def test_bad_lang_falls_back(self):
         self.tap(2, "lang:xx")
         self.assertEqual((b.lang_of(self.db, 2), self.edits[-1][2]), ("en", "Language"))
