@@ -503,10 +503,11 @@ def night_view(db, uid, day, page):
     dish = dishes(db, day, cur) if cur else None
     text = f"<b>{fmt(day, lang).lower()}</b>\n🐕 {who(cur)}\n🍽 {who(dish if other else None)}"
     if is_off(db, uid, day): text += f"\n🚫 {tr(lang, 'you')}"
-    row = [cb("nin", "success")] if is_off(db, uid, day) else [cb("noff", "danger")]
-    if not cur: row.append(cb("ntake", "success"))
-    elif cur != uid or not is_off(db, other, day): row.append(cb("nswap", "primary"))
-    return text, {"inline_keyboard": [row, [{"text": tr(lang, "b_back"), "callback_data": f"wp:{page}"}]]}
+    acts = [cb("nin", "success")] if is_off(db, uid, day) else [cb("noff", "danger")]
+    if not cur: acts.append(cb("ntake", "success"))
+    elif cur != uid or not is_off(db, other, day): acts.append(cb("nswap", "primary"))
+    # One action per row: big full-width targets on iPhone and Mac, back last.
+    return text, {"inline_keyboard": [[a] for a in acts] + [[{"text": tr(lang, "b_back"), "callback_data": f"wp:{page}"}]]}
 
 def view(db, uid, page, day=None):
     t = now()

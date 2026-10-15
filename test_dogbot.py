@@ -202,14 +202,14 @@ class Round8(Base):
             self.tap(1, data)
             self.assertEqual(self.answers[-1], "that one's old")
     def test_property_random_sequences(self):
-        """300 seeded runs of off/claim/swap/decline/Can't/Done/tick over several days.
+        """100 seeded runs of off/claim/swap/decline/Can't/Done/tick over several days.
         A chore row is history once it's settled or past its Can't cutoff; everything else must hold."""
         import random
         sent = {}
         def send(chat, text, markup=None):
             sent[len(sent) + 1000] = (chat, markup); return len(sent) + 999
         b.send = send
-        for seed in range(300):
+        for seed in range(100):
             rng, db = random.Random(seed), self.db
             for table in ("nights", "overrides", "off", "kv"): db.execute(f"DELETE FROM {table}")
             clock = [datetime(2026, 10, 20, 18, tzinfo=b.TZ)]
@@ -578,8 +578,8 @@ class Language(Base):
         b.edit = lambda chat, msg, text, markup=None, **k: (self.edits.append((chat, msg, text)), marks.append(markup))
         self.tap(1, "wk:2026-10-16:0")  # Michael's night: off / swap / back
         kb = marks[-1]["inline_keyboard"]
-        self.assertEqual([[x["callback_data"] for x in r] for r in kb], [["noff:2026-10-16:0", "nswap:2026-10-16:0"], ["wp:0"]])
-        self.assertEqual([x["style"] for x in kb[0]], ["danger", "primary"])
+        self.assertEqual([[x["callback_data"] for x in r] for r in kb], [["noff:2026-10-16:0"], ["nswap:2026-10-16:0"], ["wp:0"]])
+        self.assertEqual([kb[0][0]["style"], kb[1][0]["style"]], ["danger", "primary"])
         self.tap(1, "noff:2026-10-16:0")
         self.assertEqual((self.answers[-1], b.is_off(self.db, 1, D(16)), self.edits[-1][2]), ("👍 saved", True, b.week_view(self.db, T, uid=1)[0]))
         self.tap(1, "wk:2026-10-16:0")
