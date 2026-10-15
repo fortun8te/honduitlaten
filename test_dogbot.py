@@ -201,11 +201,6 @@ class Round8(Base):
         for data in ("wk:garbage", "wp:x", "pcover:dogs:notadate"):
             self.tap(1, data)
             self.assertEqual(self.answers[-1], "that one's old")
-    def test_invite_note(self):
-        self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
-        b.OWNER_ID = 1; b.kv(self.db, "bot", "u")
-        self.text(1, "/invite")
-        self.assertTrue(self.sent[-1][1].endswith("/invite again makes new links"))
     def test_property_random_sequences(self):
         """300 seeded runs of off/claim/swap/decline/Can't/Done/tick over several days.
         A chore row is history once it's settled or past its Can't cutoff; everything else must hold."""
@@ -256,25 +251,25 @@ class Round8(Base):
                             if live: self.assertNotIn(w, offs, (seed, step, day, chore, "off walker owns"))
 
 class Round7(Base):
-    def test_parent_cap_and_code_rotation(self):
-        self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
-        b.OWNER_ID = 1
-        b.kv(self.db, "bot", "u")
-        self.text(1, "/invite"); old = b.kv(self.db, "code")
-        self.text(1, "/invite")
-        self.assertNotEqual(old, b.kv(self.db, "code"))
-        b.on_start(self.db, {"id": 8, "first_name": "Dad"}, "parent_" + old)
-        self.assertEqual(self.sent[-1], (8, "this bot's private"))
-        b.on_start(self.db, {"id": 8, "first_name": "Dad"}, "parent_" + b.kv(self.db, "code"))
-        b.on_start(self.db, {"id": 9, "first_name": "Gran"}, "parent_" + b.kv(self.db, "code"))
-        self.assertEqual(self.sent[-1], (9, "already 2 parents"))
+    def test_join_lists(self):
+        self.addCleanup(setattr, b, "WALKER_IDS", b.WALKER_IDS)
+        self.addCleanup(setattr, b, "PARENT_IDS", b.PARENT_IDS)
+        b.WALKER_IDS, b.PARENT_IDS = [5], [8]
+        db = b.connect(":memory:")
+        b.on_start(db, {"id": 9, "first_name": "Gran"}, "")
+        self.assertEqual(self.sent[-1], (9, "this bot's private"))  # on neither list
+        b.on_start(db, {"id": 8, "first_name": "Mum"}, "parent_abc")  # old link args are ignored
+        b.on_start(db, {"id": 5, "first_name": "M"}, "")
+        self.assertEqual((b.role_of(db, 5), b.role_of(db, 8)), ("walker", "parent"))
+        b.on_start(db, {"id": 8, "first_name": "Mum"}, "")
+        self.assertEqual(self.sent[-1], (8, "you're already in, /week shows the plan"))
     def test_unknown_commands(self):
-        self.text(2, "/invite"); self.text(2, "/foo"); self.text(3, "/bar")
+        self.text(2, "/nope"); self.text(2, "/foo"); self.text(3, "/bar")
         self.assertEqual([x[1] for x in self.sent], ["/week · /lang"] * 3)
     def test_walker_welcome(self):
         db = b.connect(":memory:")
-        self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
-        b.OWNER_ID = 5
+        self.addCleanup(setattr, b, "WALKER_IDS", b.WALKER_IDS)
+        b.WALKER_IDS = [5]
         b.on_start(db, {"id": 5, "first_name": "M"}, "")
         self.assertIn("dishes 18:30, dogs 21:45,", self.sent[-1][1])
         self.assertLessEqual(self.sent[-1][1].count("\n"), 5)
@@ -316,17 +311,17 @@ class Round5(Base):
         b.handle_button = boom
         with self.assertRaises(RuntimeError): self.tap(1, "done")
         self.assertEqual(self.answers[-1], "oops, try again")
-    def test_owner_full(self):
-        self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
-        b.OWNER_ID = 99
-        b.on_start(self.db, {"id": 99, "first_name": "X"}, "")
-        self.assertEqual(self.sent[-1], (99, "both spots are taken"))
     def test_prune_late_keys(self):
         b.kv(self.db, "late_dogs_2026-10-10", "1"); b.kv(self.db, "late_dogs_2026-10-14", "1")
         b.prune(self.db, self.at(T, 12))
         self.assertEqual([r[0] for r in self.db.execute("SELECT k FROM kv WHERE k LIKE 'late%'")], ["late_dogs_2026-10-14"])
 
 class Week(Base):
+    def test_day_colours(self):
+        self.off(1, D(20))  # Michael off Tue 20, so Christian walks it
+        days = {x["text"]: x.get("style") for r in b.week_view(self.db, T, uid=1)[1]["inline_keyboard"][:2] for x in r}
+        self.assertEqual(days, {"thu 15": "success", "fri 16": None, "sat 17": "success", "sun 18": None,
+                                "mon 19": "success", "tue 20": "danger", "wed 21": "success"})
     def test_view(self):
         text, kb = b.week_view(self.db, T, uid=1)
         self.assertEqual(text.split("\n")[:4], ["<b>week 15–21 oct</b>", "", "<b>thu 15  you</b>", "fri 16  Christian"])
@@ -554,30 +549,15 @@ class Chat(Base):
         self.tap(1, "confirm", msg=m)
         self.assertEqual(self.answers[-1], "that one's old")
     def test_parent_join(self):
-        b.kv(self.db, "code", "abc")
-        b.on_start(self.db, {"id": 9, "first_name": "Dad"}, "parent_abc")
+        self.addCleanup(setattr, b, "PARENT_IDS", b.PARENT_IDS)
+        b.PARENT_IDS = [9]
+        b.on_start(self.db, {"id": 9, "first_name": "Dad"}, "")
         self.assertIn((9, b.tr("en", "hi_parent")), self.sent)
         self.assertIn((1, "Dad joined"), self.sent)
         self.assertNotIn((3, "Dad joined"), self.sent)  # parents don't hear about parents
-    def test_only_owner_starts(self):
-        db = b.connect(":memory:")
-        self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
-        b.OWNER_ID = 42
-        b.on_start(db, {"id": 9, "first_name": "X"}, "")
-        self.assertEqual(self.sent[-1], (9, "this bot's private"))
-        b.on_start(db, {"id": 42, "first_name": "Michael"}, "")
-        self.assertEqual(b.role_of(db, 42), "walker")
-        b.kv(db, "bot", "honduitlatenbot")
-        b.on_text(db, {"from": {"id": 42}, "chat": {"type": "private"}, "text": "/invite"})
-        self.assertIn("start=walker_", self.sent[-1][1])
-        n = len(self.sent)
-        b.on_start(db, {"id": 7, "first_name": "Christian"}, "walker_" + b.kv(db, "code"))
-        b.on_text(db, {"from": {"id": 7}, "chat": {"type": "private"}, "text": "/invite"})
-        self.assertNotIn("start=", self.sent[-1][1])
-        self.assertGreater(len(self.sent), n)
-    def test_unknown_rejected(self):
-        b.on_start(self.db, {"id": 9, "first_name": "X"}, "walker_nope")
-        self.assertEqual(self.sent, [(9, "this bot's private")])
+    def test_invite_is_gone(self):
+        self.text(1, "/invite")  # just an unknown command now
+        self.assertEqual(self.sent[-1], (1, "/week · /lang"))
 
 class Language(Base):
     def test_toggle_and_dutch(self):
@@ -611,12 +591,12 @@ class Language(Base):
         self.tap(1, f"ntake:{d}:0")  # Christian's night: no taking without his yes
         self.assertEqual(b.owner(self.db, d, T), 2)
     def test_plan_button(self):
-        self.assertEqual(len(b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"]), 1)  # reminders: done/can't only
+        self.assertEqual(len(b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"]), 2)  # reminders: done and can't, one per row
         self.tap(1, "plan")
         self.assertTrue(self.sent[-1][1].startswith("<b>week 15–21 oct</b>"))
         self.assertTrue(all(len(x["callback_data"].encode()) <= 64 for r in b.week_view(self.db, T)[1]["inline_keyboard"] for x in r))
     def test_button_colours(self):
-        k = b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"][0]
+        k = [r[0] for r in b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"]]
         self.assertEqual([(x["callback_data"], x["style"]) for x in k], [("done:dogs", "success"), ("cant:dogs", "danger")])
         self.assertEqual(b.plan_button("en")["style"], "primary")
         self.assertNotIn("style", b.buttons(self.db, 1, "cancel")["inline_keyboard"][0][0])  # neutral stays neutral

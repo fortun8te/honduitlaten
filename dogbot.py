@@ -1,5 +1,5 @@
 """Dog-walk rotation bot. Telegram DMs, long polling, SQLite."""
-import fcntl, html, json, os, re, secrets, sqlite3, sys, time, urllib.error, urllib.request
+import fcntl, html, json, os, re, sqlite3, sys, time, urllib.error, urllib.request
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -55,7 +55,6 @@ S = {  # key: (English, Nederlands)
     "too_far": ("max 2 weeks ahead", "max 2 weken vooruit"),
     "b_next": ("next week ▶", "volgende week ▶"),
     "b_prev": ("◀ this week", "◀ deze week"),
-    "full_parents": ("already 2 parents", "al 2 ouders"),
     "commands": ("/week · /lang", "/week · /lang"),
     "taken": ("{day}'s yours", "{day} is van jou"),
     "target_off": ("{name} can't then", "{name} kan dan niet"),
@@ -79,13 +78,10 @@ S = {  # key: (English, Nederlands)
     "cancelled": ("cancelled", "geannuleerd"),
     "private": ("this bot's private", "deze bot is privé"),
     "already_in": ("you're already in, /week shows the plan", "je zit er al in, /week voor de planning"),
-    "full": ("both spots are taken", "beide plekken zijn bezet"),
     "hi_walker": "Heyyy! dog and dish bot here 🐕 dishes 18:30, dogs 21:45, hit done when u did it, "
                  "can't just passes that one job on aha, other one taps start first 🙏",
-    "hi_invite": ("\n/invite gets links for the others", "\n/invite geeft links voor de rest"),
     "hi_parent": "Heyyy! dog and dish bot here 🐕 you'll hear when the dogs are out, or if something's left",
     "joined": ("{name} joined", "{name} doet mee"),
-    "invite": ("other walker:\n{w}\n\nparents:\n{p}\n\n/invite again makes new links", "andere loper:\n{w}\n\nouders:\n{p}\n\nopnieuw /invite maakt nieuwe links"),
     "lang": ("Language", "Taal"),
     "b_plan": ("📅 plan", "📅 planning"),
     "b_noff": ("i'm off", "ik kan niet"),
@@ -357,7 +353,9 @@ def apply_claim(db, target, days, chore="dogs"):
 # ---------- telegram ----------
 
 TOKEN = os.environ.get("DOGS_TELEGRAM_BOT_TOKEN", "")
-OWNER_ID = int(os.environ.get("OWNER_ID") or 0)  # Michael: the only one who can start the bot and invite
+def env_ids(var): return [int(x) for x in os.environ.get(var, "").split(",") if x.strip()]
+WALKER_IDS = env_ids("WALKER_IDS")  # Telegram user ids of the two walkers, Michael first
+PARENT_IDS = env_ids("PARENT_IDS")  # Telegram user ids of the parents
 RETRY = (0, 1, 3, 9)  # seconds between send attempts
 MAX_PAGE = 1          # /week pages: this week and next
 AHEAD = 14            # planning horizon in days
@@ -468,6 +466,11 @@ def lang_view(lang):
         {"text": ("✓ " if l == lang else "") + label, "callback_data": "lang:" + l}
         for l, label in zip(LANGS, ("English", "Nederlands"))]]}
 
+def day_style(db, uid, d, w):
+    """Week-view day colour for a walker: red = you're off that day, green = your night, neutral otherwise."""
+    if is_off(db, uid, d): return "danger"
+    return "success" if w == uid else None
+
 def week_view(db, today, lang="en", page=0, uid=None):
     """Overview as text (one line per night, today bold), days as compact buttons, 4 per row."""
     rows = week(db, today, skip=7 * page)
@@ -483,7 +486,11 @@ def week_view(db, today, lang="en", page=0, uid=None):
         off = " 🚫" if any(is_off(db, x["id"], d) for x in members(db, "walker")) else ""
         line = f"{fmt(d, lang).lower()}  {'⇄ ' if d.isoformat() in swaps else ''}{who}{off}"
         lines.append(f"<b>{line}</b>" if d == today else line)
-    days = [{"text": fmt(d, lang).lower(), "callback_data": f"wk:{d}:{page}"} for d, _ in rows]
+    def day_btn(d, w):
+        b = {"text": fmt(d, lang).lower(), "callback_data": f"wk:{d}:{page}"}
+        s = day_style(db, uid, d, w) if uid else None
+        return {**b, "style": s} if s else b
+    days = [day_btn(d, w) for d, w in rows]
     nav = {"text": tr(lang, "b_next"), "callback_data": "wp:1"} if page == 0 else {"text": tr(lang, "b_prev"), "callback_data": "wp:0"}
     return "\n".join(lines), {"inline_keyboard": [days[:4], days[4:], [nav]]}
 
@@ -542,8 +549,9 @@ def K(key, chore):
     return key + "_dishes" if chore == "dishes" and key + "_dishes" in S else key
 
 def chore_buttons(db, uid, chore):
+    """Done and Can't stacked full width: the two things a walker taps each night, each a big target."""
     lang = lang_of(db, uid)
-    return {"inline_keyboard": [[btn(lang, k, f"{k}:{chore}") for k in ("done", "cant")]]}
+    return {"inline_keyboard": [[btn(lang, k, f"{k}:{chore}")] for k in ("done", "cant")]}
 
 def plan_button(lang):
     return btn(lang, "plan", "plan")
@@ -839,26 +847,18 @@ def on_parent_cover(db, uid, arg, chat, msg, answer):
         if m["id"] not in (n["walker"], uid): say(db, m["id"], K("pcover_all", chore), name=who)
 
 def on_start(db, u, arg):
+    """Start joins people on WALKER_IDS / PARENT_IDS. Anyone else gets the private note."""
     uid, first = u["id"], u.get("first_name") or "?"
     lang = "nl" if (u.get("language_code") or "").startswith("nl") else "en"
     if role_of(db, uid): return say(db, uid, "already_in")
-    if uid == OWNER_ID:
-        role = "walker"
-        if len(members(db, "walker")) >= 2: return send(uid, tr(lang, "full"))
-    else:
-        m = re.fullmatch(r"(walker|parent)_(\w+)", arg or "")
-        if not m or m.group(2) != kv(db, "code"): return send(uid, tr(lang, "private"))
-        role = m.group(1)
-        if role == "walker" and len(members(db, "walker")) >= 2: return send(uid, tr(lang, "full"))
-        if role == "parent" and len(members(db, "parent")) >= 2: return send(uid, tr(lang, "full_parents"))
+    role = "walker" if uid in WALKER_IDS else "parent" if uid in PARENT_IDS else None
+    if not role: return send(uid, tr(lang, "private"))
     db.execute("INSERT INTO members(id, name, role, joined, lang) VALUES(?,?,?,?,?)",
                (uid, first, role, int(time.time()), lang)); db.commit()
     if role == "parent":
         say(db, uid, "hi_parent")
     else:
-        first_walker = len(members(db, "walker")) == 1
-        send(uid, tr(lang, "hi_walker", name=first) + (tr(lang, "hi_invite") if first_walker else ""),
-             {"inline_keyboard": [[plan_button(lang)]]})
+        send(uid, tr(lang, "hi_walker", name=first), {"inline_keyboard": [[plan_button(lang)]]})
     for m in members(db, "walker") + (members(db, "parent") if role == "walker" else []):
         if m["id"] != uid: say(db, m["id"], "joined", name=first)
 
@@ -873,10 +873,6 @@ def on_text(db, msg):
     lang, today = lang_of(db, uid), now().date()
     if text == "/lang": return send(uid, *lang_view(lang))
     if text == "/week": return open_week(db, uid)
-    if text == "/invite" and uid == OWNER_ID:
-        code = kv(db, "code", secrets.token_hex(4))  # new code each time: older links stop working
-        link = f"https://t.me/{kv(db, 'bot')}?start=%s_{code}"
-        return say(db, uid, "invite", w=link % "walker", p=link % "parent")
     if text.startswith("/"): return say(db, uid, "commands")
     if role != "walker": return say(db, uid, "hi_parent")
     days = parse_days(text, today)
@@ -891,15 +887,13 @@ def on_text(db, msg):
     ask_day(db, uid, {"type": "ask", "target": uid, "off": [], "walk": [], "days": [d.isoformat() for d in days]})
 
 def setup():
-    """One-off bot profile: name and commands (en + nl); /invite only in the owner chat."""
+    """One-off bot profile: name and commands (en + nl)."""
     log("bot", api("getMe")["username"])
     api("setMyName", name="Honduitlaten")
-    for lang, cmds in [(None, ("plan", "language", "links for the others")),
-                       ("nl", ("planning", "taal", "links voor de rest"))]:
+    for lang, cmds in [(None, ("plan", "language")), ("nl", ("planning", "taal"))]:
         extra = {"language_code": lang} if lang else {}
-        cmd = [{"command": c, "description": d} for c, d in zip(("week", "lang", "invite"), cmds)]
-        api("setMyCommands", commands=cmd[:2], **extra)
-        api("setMyCommands", commands=cmd, scope={"type": "chat", "chat_id": OWNER_ID}, **extra)
+        cmd = [{"command": c, "description": d} for c, d in zip(("week", "lang"), cmds)]
+        api("setMyCommands", commands=cmd, **extra)
 
 LOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dogbot.lock")
 
@@ -910,7 +904,6 @@ def run():
     except OSError: sys.exit(3)  # another instance is running; run.sh stops on 3
     lock.truncate(0); lock.write(str(os.getpid())); lock.flush()
     db = connect()
-    kv(db, "bot", api("getMe")["username"])
     log("polling")
     poll(db, 0)  # handle taps queued while down (e.g. Done) before tick() can send late alerts
     while True:
