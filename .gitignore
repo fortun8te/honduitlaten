@@ -1,0 +1,7 @@
+.env
+*.db
+*.db-*
+*.log
+*.lock
+__pycache__/
+week_mock.png.tmp
