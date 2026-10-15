@@ -42,6 +42,10 @@ class Rota(Base):
     def test_om_en_om(self):
         self.assertEqual([b.rota(self.db, D(d)) for d in range(16, 20)], [M, C, M, C])
         self.assertEqual({b.who(self.db, D(17), c) for c in b.CHORES}, {C})
+    def test_fixed_start_whoever_joined_first(self):
+        self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID); b.OWNER_ID = M
+        self.db.execute("UPDATE members SET joined=0 WHERE id=?", (C,))
+        self.assertEqual([b.rota(self.db, D(d)) for d in (16, 17, 31)], [M, C, C])
     def test_one_walker_does_all(self):
         self.db.execute("DELETE FROM members WHERE id=?", (C,))
         self.assertEqual({b.rota(self.db, D(d)) for d in range(16, 20)}, {M})
@@ -68,24 +72,60 @@ class Evening(Base):
         self.assertEqual(self.score(), (0, 0))
     def test_dogs_not_before_21(self):
         self.clock(T, 18, 40); self.tap(M, f"d:{T}:honden")
-        self.assertEqual(self.answer(), "Nog even wachten, honden zijn om 21:45")
+        self.assertEqual(self.answer(), "Nog even wachten 🙏")
         self.assertTrue(b.is_open(self.db, T, "honden"))
+        self.tap(M, "d:2026-10-18:afwas")
+        self.assertEqual((self.answer(), b.is_open(self.db, D(18), "afwas")), ("Nog even wachten 🙏", True))
     def test_cant_tonight(self):
         self.tick(T, 18, 30)
         self.tap(M, f"k:{T}")
-        self.assertEqual(self.labels(self.edits[-1][3]), ["🍽 Afwas", "🐕 Honden", "« Terug"])
+        self.assertEqual(self.labels(self.edits[-1][3]), ["🍽 Afwas", "🐕 Honden", "Allebei", "« Terug"])
         self.tap(M, f"g:{T}:afwas")
         self.assertEqual(self.pings(C)[0][1], "<b>Vanavond ben jij aan de beurt</b>\n🍽 Afwas · +1")
         self.assertIn("🍽 Afwas → Christian", self.edits[-1][2])
         self.clock(T, 19); self.tap(C, f"d:{T}:afwas")
         self.assertEqual(self.score(), (-1, 1))
+    def test_allebei_is_one_ping(self):
+        self.tick(T, 18, 30); self.tap(M, f"g:{T}:")
+        self.assertEqual({b.who(self.db, T, c) for c in b.CHORES}, {C})
+        self.assertEqual([s[1] for s in self.pings(C)], ["<b>Vanavond ben jij aan de beurt</b>\n🍽 Afwas · +1\n🐕 Honden · +1"])
+        self.clock(T, 18, 31); self.tap(C, f"k:{T}")
+        self.assertEqual(self.labels(self.edits[-1][3]), ["🍽 Afwas", "🐕 Honden", "Allebei", "« Terug"])
+    def test_only_dishes_tonight(self):
+        self.tick(T, 18, 30); self.clock(T, 21); self.tap(M, f"g:{T}:honden")
+        self.assertEqual((b.who(self.db, T, "afwas"), b.who(self.db, T, "honden")), (M, C))
+        self.assertEqual(self.labels(self.edits[-1][3]), ["✅ Afwas", "🙅 Ik kan niet"])
     def test_both_cant_is_nobody(self):
         self.tick(T, 18, 30)
         self.clock(T, 21); self.tap(M, f"g:{T}:honden"); self.tap(C, f"g:{T}:honden")
         self.assertIsNone(b.who(self.db, T, "honden"))
-        self.assertIn("🐕 Honden → iemand anders", self.pings(M)[-1][1])
+        self.assertEqual(len(self.pings(M)), 1)  # quiet: nothing for Michael to do
+        self.assertEqual(self.sent[-1][::3], (M, True))
+        self.assertIn("🐕 Honden → iemand anders", [e for e in self.edits if e[0] == M][-1][2])
         self.clock(T, 22); self.tap(M, f"d:{T}:afwas")
         self.assertEqual(self.score(), (0, 0))
+    def test_nobody_keeps_the_2145_reminder(self):
+        self.tick(T, 18, 30); self.clock(T, 19)
+        self.tap(M, f"g:{T}:afwas"); self.tap(C, f"g:{T}:afwas")
+        self.tick(T, 21, 45)
+        self.assertEqual(len(self.pings(M)), 2)
+    def test_late_start_one_ping(self):
+        self.tick(T, 22)
+        self.assertEqual(len(self.pings(M)), 1)
+        self.assertNotIn("delete", [c[0] for c in self.calls])
+    def test_failed_send_keeps_card_and_retries(self):
+        self.tick(T, 18, 30)
+        real, b.send = b.send, lambda *a, **k: None
+        self.clock(T, 19); self.tap(M, f"g:{T}:afwas")
+        b.send = real
+        self.assertNotIn("delete", [c[0] for c in self.calls])
+        self.tick(T, 19, 1)
+        self.assertEqual(self.pings(C)[0][1], "<b>Vanavond ben jij aan de beurt</b>\n🍽 Afwas · +1")
+    def test_after_23_no_more_can_t(self):
+        self.tick(T, 18, 30); self.tick(T, 23)
+        self.assertEqual(self.labels(self.edits[-1][3]), ["✅ Afwas", "✅ Honden"])
+        self.tap(M, f"k:{T}")
+        self.assertEqual(self.answer(), "Te laat ahah, regel 't even zelf")
     def test_too_late_to_give(self):
         self.clock(T, 23, 5); self.tap(M, f"g:{T}:honden")
         self.assertEqual((self.answer(), b.who(self.db, T, "honden")), ("Te laat ahah, regel 't even zelf", M))
@@ -141,6 +181,16 @@ class Payback(Base):
         self.clock(D(19), 19); self.tap(M, "d:2026-10-19:afwas"); b.settle(self.db, D(19))
         self.assertEqual(self.score(), (0, 0))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM tasks WHERE payback=1 AND done_at IS NULL").fetchone()[0], 0)
+    def test_released_on_the_day_itself_before_1830(self):
+        self.owe()  # Michael -1, payback: ma 19 afwas
+        self.clock(T, 19, 5); self.tap(M, "t:2026-10-18:afwas")  # Christian takes zo 18 afwas and forgets it
+        b.setrow(self.db, D(18), "honden", who=M, done_at="21:50")
+        self.clock(D(19), 3); b.close(self.db, D(18))
+        self.assertEqual((self.score(), b.who(self.db, D(19), "afwas")), ((0, 0), C))
+    def test_no_extra_payback_after_midnight(self):
+        self.owe()  # payback ma 19 afwas, still open until 03:00 on the 20th
+        self.clock(D(20), 0, 5); b.settle(self.db, D(20))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM tasks WHERE payback=1").fetchone()[0], 1)
     def test_released_when_even_again(self):
         self.owe()
         self.tap(C, "t:2026-10-17:afwas")
@@ -223,6 +273,13 @@ class Upgrade(Base):
         self.db = db
         self.tick(T, 3, 30); self.tick(T, 18, 30)  # yesterday was the old version: not forgotten
         self.assertEqual((len(self.pings(b.rota(db, T))), self.score()), (1, (0, 0)))
+    def test_daily_backup(self):
+        import os, sqlite3
+        path = self.file_db(self.OLD)
+        self.db = b.connect(path); self.addCleanup(self.db.close)
+        self.tick(T, 12); self.tap(M, f"t:{T}:afwas")
+        copy = sqlite3.connect(path + ".bak-vr"); self.addCleanup(copy.close)
+        self.assertEqual(copy.execute("SELECT COUNT(*) FROM members").fetchone()[0], 3)
     def test_second_start_changes_nothing(self):
         import os
         path = self.file_db()
@@ -244,7 +301,7 @@ class Infra(Base):
         self.clock(T, 18, 40); self.tap(M, f"d:{T}:afwas")
         self.assertFalse(b.is_open(self.db, T, "afwas"))
     def test_malformed_callback(self):
-        for data in ("d:x", "d:2026-10-16:fiets", "zz:2026-10-16"):
+        for data in ("d:x", "d:2026-10-16:fiets", "zz:2026-10-16", "t:2026-10-16", "d:2026-10-16", "d:9999-12-31:afwas"):
             self.tap(M, data)
             self.assertEqual(self.answer(), "Die is verlopen")
     def test_429_waits_once(self):

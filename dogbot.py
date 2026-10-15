@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Europe/Amsterdam")
 CHORES = {"afwas": ("🍽", "Afwas", (18, 30)), "honden": ("🐕", "Honden", (21, 45))}  # emoji, label, card time
+ROTA_START = date(2026, 10, 16)  # Michael's evening; om en om from there
 DOGS_FROM = 21   # ✅ Honden works from 21:00
 GIVE_UNTIL = 23  # 🙅 works until 23:00
 CLOSE = 3        # open chores count as forgotten at 03:00 the next morning
@@ -60,11 +61,11 @@ def name(db, uid):
 # ---------- rota ----------
 
 def rota(db, day):
-    """Whose evening `day` is: om en om, the first walker on the day he joined."""
+    """Whose evening `day` is: om en om, the owner on ROTA_START."""
     w = walkers(db)
     if len(w) < 2: return w[0] if w else None
-    start = datetime.fromtimestamp(db.execute("SELECT MIN(joined) FROM members WHERE role='walker'").fetchone()[0], TZ)
-    return w[(day - start.date()).days % 2]
+    first = OWNER_ID if OWNER_ID in w else w[0]
+    return first if (day - ROTA_START).days % 2 == 0 else next(x for x in w if x != first)
 
 def task(db, day, chore):
     return db.execute("SELECT * FROM tasks WHERE day=? AND chore=?", (day.isoformat(), chore)).fetchone()
@@ -97,6 +98,7 @@ def point(db, day, chore, plus, minus):
     """Every point moves both ways: one brother +1, the other -1."""
     db.executemany("INSERT INTO points VALUES(?,?,?,?)", [(day.isoformat(), chore, plus, 1), (day.isoformat(), chore, minus, -1)])
     db.commit()
+    settle(db, now().date())
 
 def settle(db, today):
     """Whoever is behind takes the other's next chores, from overmorgen on, until it's even again."""
@@ -105,8 +107,9 @@ def settle(db, today):
         if o is None: return
         owed = max(-score(db, uid), 0)
         pending = db.execute("SELECT day, chore FROM tasks WHERE who=? AND payback=1 AND done_at IS NULL AND missed=0 "
-                             "AND day>=? ORDER BY day DESC, chore DESC", (uid, today.isoformat())).fetchall()
-        extra = [p for p in pending if p["day"] > today.isoformat()][:max(len(pending) - owed, 0)]
+                             "ORDER BY day DESC, chore DESC", (uid,)).fetchall()
+        keep = today + timedelta(days=now() >= at(today, CHORES["afwas"][2]))  # tonight's cards are out: keep those
+        extra = [p for p in pending if p["day"] >= keep.isoformat()][:max(len(pending) - owed, 0)]
         db.executemany("DELETE FROM tasks WHERE day=? AND chore=?", [tuple(p) for p in extra])
         need, d = owed - len(pending), today + timedelta(days=2)
         while need > 0 and d < today + timedelta(days=AHEAD):
@@ -167,6 +170,7 @@ def card_view(db, uid, day, choose=False):
     give = [c for c in CHORES if can_give(db, day, c, uid)]
     if choose:
         return "<b>Wat lukt niet ?</b>", [[btn(f"{CHORES[c][0]} {CHORES[c][1]}", f"g:{day}:{c}") for c in give],
+                                          [btn("Allebei", f"g:{day}:")] if len(give) > 1 else [],
                                           [btn("« Terug", f"b:{day}")]]
     left = todo(db, day, uid)
     if left: title = "Tijd voor de honden 🐕" if "honden" in left and now() >= at(day, CHORES["honden"][2]) \
@@ -174,7 +178,7 @@ def card_view(db, uid, day, choose=False):
     else: title = "Alles gedaan, toppp 🫶" if any(who(db, day, c) == uid and task(db, day, c) and task(db, day, c)["done_at"]
                                                   for c in CHORES) else "Vanavond is geregeld 👍"
     kb = [[btn(f"✅ {CHORES[c][1]}", f"d:{day}:{c}", "success") for c in left], [btn("🙅 Ik kan niet", f"k:{day}")] if give else []]
-    return f"<b>{title}</b>\n" + "\n".join(line(db, day, c, uid) for c in mine(db, day, uid)), kb
+    return f"<b>{title}</b>" + "".join("\n" + line(db, day, c, uid) for c in mine(db, day, uid)), kb
 
 def menu_view(db, uid):
     today = now().date()
@@ -268,25 +272,25 @@ def post_card(db, uid, day, ping):
     c = db.execute("SELECT * FROM cards WHERE uid=? AND day=?", (uid, day.isoformat())).fetchone()
     ping = ping and (c["pings"] if c else 0) < MAX_PINGS
     if c and not ping: return edit(uid, c["msg"], text, kb)
-    if c: delete(uid, c["msg"])
     m = send(uid, text, kbd(kb), silent=not ping)
-    if m: db.execute("REPLACE INTO cards VALUES(?,?,?,?)", (uid, day.isoformat(), m, (c["pings"] if c else 0) + ping)); db.commit()
+    if not m: return  # the old card stays; without one, the next tick tries again
+    if c: delete(uid, c["msg"])
+    db.execute("REPLACE INTO cards VALUES(?,?,?,?)", (uid, day.isoformat(), m, (c["pings"] if c else 0) + ping)); db.commit()
 
 def refresh(db, day):
     for (uid,) in db.execute("SELECT uid FROM cards WHERE day=?", (day.isoformat(),)).fetchall():
         post_card(db, uid, day, False)
 
-def give(db, uid, day, chore):
-    """uid can't: the chore goes to the other brother, or to nobody if it was the other's to begin with.
-    Once the evening has started the one who has to know gets his card with a ping, before that a quiet message."""
+def give(db, uid, day, *chores):
+    """uid can't: the chores go to the other brother, or to nobody if they were the other's to begin with.
+    Only a brother who has to act tonight gets a ping (his card); everything else is a quiet message."""
     owner = rota(db, day)
     to = other(db, uid) if owner == uid else None
-    setrow(db, day, chore, who=to, payback=0)
-    tell, text = (to, f"{name(db, uid)} kan {when(day)} {noun(chore)} niet, die doe jij 🙏") if to else \
-        (owner, f"{name(db, uid)} kan {when(day)} {noun(chore)} ook niet, iemand anders moet 't doen 😭")
-    if tell and tell != uid:
-        if now() >= at(day, CHORES["afwas"][2]): post_card(db, tell, day, True)
-        else: send(tell, text, silent=True)
+    for chore in chores: setrow(db, day, chore, who=to, payback=0)
+    what = " en ".join(noun(c) for c in chores)
+    if to and now() >= at(day, CHORES["afwas"][2]): post_card(db, to, day, True)
+    elif to: send(to, f"{name(db, uid)} kan {when(day)} {what} niet, die doe jij 🙏", silent=True)
+    elif owner != uid: send(owner, f"{name(db, uid)} kan {when(day)} {what} ook niet, iemand anders moet 't doen 😭", silent=True)
     refresh(db, day)
 
 def take_back(db, uid, day, chore):
@@ -305,20 +309,30 @@ def show_menu(db, uid, msg=None):
     if m: kv(db, f"menu_{uid}", str(m))
 
 def tick(db, t):
-    """Cards at 18:30 to whoever has something open, the dogs card again at 21:45, yesterday closed at 03:00."""
+    """Cards from 18:30 to whoever has something open, the dogs card again at 21:45 (once, even after downtime),
+    cards tidied at 23:00 when 🙅 closes, yesterday closed at 03:00."""
     day = t.date()
     since = date.fromisoformat(kv(db, "since") or kv(db, "since", day.isoformat()))
     y = day - timedelta(days=1 if t.hour >= CLOSE else 2)
     if y >= since and not kv(db, f"closed_{y}"):
         kv(db, f"closed_{y}", "1"); close(db, y)
     if t >= at(day, CHORES["afwas"][2]):
+        dogs = t >= at(day, CHORES["honden"][2]) and not kv(db, f"dogs_{day}")
+        if dogs: kv(db, f"dogs_{day}", "1")
         for uid in walkers(db):
-            if todo(db, day, uid) and not db.execute("SELECT 1 FROM cards WHERE uid=? AND day=?", (uid, day.isoformat())).fetchone():
-                post_card(db, uid, day, True)
-    if t >= at(day, CHORES["honden"][2]) and not kv(db, f"dogs_{day}"):
-        kv(db, f"dogs_{day}", "1")
-        if who(db, day, "honden") and is_open(db, day, "honden"): post_card(db, who(db, day, "honden"), day, True)
-    settle(db, day)
+            has = db.execute("SELECT 1 FROM cards WHERE uid=? AND day=?", (uid, day.isoformat())).fetchone()
+            if todo(db, day, uid) and (not has or dogs and "honden" in todo(db, day, uid)): post_card(db, uid, day, True)
+    if t >= at(day, (GIVE_UNTIL, 0)) and not kv(db, f"shut_{day}"):
+        kv(db, f"shut_{day}", "1"); refresh(db, day)
+    if not kv(db, f"daily_{day}"):  # points trigger settle too; once a day the horizon moves on
+        kv(db, f"daily_{day}", "1"); settle(db, day); backup(db, day)
+
+def backup(db, day):
+    """One copy per weekday next to the database: there's always last week to go back to."""
+    path = db.execute("PRAGMA database_list").fetchone()[2]
+    if not path: return
+    copy = sqlite3.connect(f"{path}.bak-{DAYS[day.weekday()]}")
+    db.backup(copy); copy.close()
 
 # ---------- handlers ----------
 
@@ -328,7 +342,7 @@ def on_button(db, q):
     def answer(text): reply["text"] = text
     try:
         handle_button(db, q, answer)
-    except (ValueError, KeyError, IndexError) as e:  # malformed or outdated callback_data
+    except (ValueError, KeyError, IndexError, OverflowError) as e:  # malformed or outdated callback_data
         reply["text"] = "Die is verlopen"
         log("callback", q.get("data"), repr(e))
     except Exception:
@@ -344,8 +358,10 @@ def handle_button(db, q, answer):
     if data == "m": return show_menu(db, uid, msg)
     if data == "cal": return edit(uid, msg, *calendar_view(db, uid))
     kind, day, chore = (data.split(":") + [""])[:3]
-    day = date.fromisoformat(day)
-    if chore and chore not in CHORES: raise ValueError(chore)
+    day, today = date.fromisoformat(day), now().date()
+    if not today - timedelta(days=2) <= day < today + timedelta(days=AHEAD): raise ValueError(day)
+    allowed = {"t": [*CHORES], "d": [*CHORES], "g": [*CHORES, ""]}.get(kind)  # g without a chore: Allebei
+    if allowed is not None and chore not in allowed: raise ValueError(chore)
     if kind == "e": return edit(uid, msg, *evening_view(db, uid, day))
     if kind == "t":
         t, has = task(db, day, chore), who(db, day, chore) == uid
@@ -355,17 +371,22 @@ def handle_button(db, q, answer):
             take_back(db, uid, day, chore)
         else: answer("Te laat ahah, regel 't even zelf")
         return edit(uid, msg, *evening_view(db, uid, day))
-    if kind == "k": return edit(uid, msg, *card_view(db, uid, day, choose=True))
+    if kind == "k":
+        if any(can_give(db, day, c, uid) for c in CHORES): return edit(uid, msg, *card_view(db, uid, day, choose=True))
+        answer("Te laat ahah, regel 't even zelf")
+        return edit(uid, msg, *card_view(db, uid, day))
     if kind == "b": return edit(uid, msg, *card_view(db, uid, day))
-    if kind == "g":
-        if can_give(db, day, chore, uid): give(db, uid, day, chore)
+    if kind == "g":  # no chore: Allebei
+        chores = [c for c in ([chore] if chore else CHORES) if can_give(db, day, c, uid)]
+        if chores: give(db, uid, day, *chores)
         else: answer("Te laat ahah, regel 't even zelf")
         return edit(uid, msg, *card_view(db, uid, day))
     if kind == "d":
         t = now()
         if who(db, day, chore) != uid or not is_open(db, day, chore) or t >= at(day + timedelta(days=1), (CLOSE, 0)):
             return answer("Die is verlopen")
-        if chore == "honden" and t < at(day, (DOGS_FROM, 0)): return answer("Nog even wachten, honden zijn om 21:45")
+        if day > t.date() or chore == "honden" and t < at(day, (DOGS_FROM, 0)):
+            return answer("Nog even wachten 🙏")
         setrow(db, day, chore, who=uid, done_at=t.strftime("%H:%M"))
         if rota(db, day) != uid: point(db, day, chore, uid, rota(db, day))
         return refresh(db, day)
