@@ -46,9 +46,13 @@ class Rota(Base):
         self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID); b.OWNER_ID = M
         self.db.execute("UPDATE members SET joined=0 WHERE id=?", (C,))
         self.assertEqual([b.rota(self.db, D(d)) for d in (16, 17, 31)], [M, C, C])
-    def test_one_walker_does_all(self):
+    def test_alone_only_your_own_evenings(self):
         self.db.execute("DELETE FROM members WHERE id=?", (C,))
-        self.assertEqual({b.rota(self.db, D(d)) for d in range(16, 20)}, {M})
+        self.assertEqual([b.rota(self.db, D(d)) for d in range(16, 20)], [M, None, M, None])
+        self.assertEqual(self.labels(b.kbd(b.calendar_view(self.db, M)[1]))[:3], ["vr 16", "zo 18", "di 20"])
+        self.assertTrue(b.menu_view(self.db, M)[0].startswith("<b>Vanavond</b>  jij\n<b>Morgen</b>  nog niemand"))
+        self.tick(D(17), 18, 30)
+        self.assertEqual(self.sent, [])
 
 class Evening(Base):
     def test_card_at_1830_to_owner_only(self):
@@ -155,6 +159,11 @@ class Calendar(Base):
         self.assertIn("zo 18 🐕", self.labels(b.kbd(b.calendar_view(self.db, M)[1])))
         self.tap(M, "t:2026-10-18:afwas")
         self.assertEqual((self.sent[-1][1], b.who(self.db, D(18), "afwas")), ("Michael doet zo 18 de afwas toch zelf 👍", M))
+    def test_evening_screen(self):
+        view = lambda: (b.evening_view(self.db, M, D(18))[0], self.labels(b.kbd(b.evening_view(self.db, M, D(18))[1])))
+        self.assertEqual(view(), ("<b>Zo 18 oktober</b>\nTik op wat niet lukt", ["🍽 Afwas", "🐕 Honden", "« Terug"]))
+        self.tap(M, "t:2026-10-18:honden")
+        self.assertEqual(view()[1], ["🍽 Afwas", "✕ 🐕 Honden", "« Terug"])
     def test_whole_evening_off(self):
         for c in b.CHORES: self.tap(M, f"t:2026-10-18:{c}")
         row = b.calendar_view(self.db, M)[1][0]
@@ -204,6 +213,8 @@ class Menu(Base):
         self.assertEqual(self.sent[-1][1], "<b>Vanavond</b>  jij\n<b>Morgen</b>  Christian\n⚖️ gelijk")
         self.text(M, "☰ Menu")
         self.assertIn(("delete", M, 101), self.calls)
+        self.calls.clear(); self.text(M, "/start")
+        self.assertEqual(self.calls[0], ("delete", M, 7))
     def test_split_evening(self):
         self.tap(M, f"t:{T}:afwas")
         self.assertTrue(b.menu_view(self.db, M)[0].startswith("<b>Vanavond</b>  🍽 Christian · 🐕 jij"))

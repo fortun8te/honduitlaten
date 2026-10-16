@@ -61,11 +61,11 @@ def name(db, uid):
 # ---------- rota ----------
 
 def rota(db, day):
-    """Whose evening `day` is: om en om, the owner on ROTA_START."""
+    """Whose evening `day` is: om en om, the owner on ROTA_START. None: the other brother hasn't joined yet."""
     w = walkers(db)
-    if len(w) < 2: return w[0] if w else None
+    if not w: return None
     first = OWNER_ID if OWNER_ID in w else w[0]
-    return first if (day - ROTA_START).days % 2 == 0 else next(x for x in w if x != first)
+    return first if (day - ROTA_START).days % 2 == 0 else next((x for x in w if x != first), None)
 
 def task(db, day, chore):
     return db.execute("SELECT * FROM tasks WHERE day=? AND chore=?", (day.isoformat(), chore)).fetchone()
@@ -139,7 +139,9 @@ def when(d):
 
 def noun(chore): return "de " + chore
 
-def who_name(db, w, uid): return "jij" if w == uid else name(db, w) if w else "iemand anders"
+def who_name(db, w, uid):
+    if w: return "jij" if w == uid else name(db, w)
+    return "iemand anders" if len(walkers(db)) > 1 else "nog niemand"
 
 def line(db, day, chore, uid):
     e, label, hm = CHORES[chore]
@@ -211,13 +213,17 @@ def calendar_view(db, uid):
         [row[i:i + 4] for i in range(0, len(row), 4)] + [[btn("« Terug", "m")]]
 
 def evening_view(db, uid, day):
+    """One evening: a button per chore. Plain means you do it, red ✕ means you can't; tapping switches."""
     row = []
     for c in mine(db, day, uid):
         e, label, _ = CHORES[c]
-        t, has = task(db, day, c), who(db, day, c) == uid
+        t = task(db, day, c)
         if t and t["done_at"]: row.append(btn(f"{e} {label} ✅ {t['done_at']}", f"e:{day}"))
-        else: row.append(btn(f"{e} {label} {'✅' if has else '✕'}", f"t:{day}:{c}", "success" if has else "danger"))
-    return f"<b>{fmt(day).capitalize()} {MONTHS[day.month - 1]}</b>\nWat doe jij ?", [row, [btn("« Terug", "cal")]]
+        elif who(db, day, c) == uid:
+            tag = " · inhaal" if t and t["payback"] else " +1" if rota(db, day) != uid else ""
+            row.append(btn(f"{e} {label}{tag}", f"t:{day}:{c}"))
+        else: row.append(btn(f"✕ {e} {label}", f"t:{day}:{c}", "danger"))
+    return f"<b>{fmt(day).capitalize()} {MONTHS[day.month - 1]}</b>\nTik op wat niet lukt", [row, [btn("« Terug", "cal")]]
 
 # ---------- telegram ----------
 
@@ -394,7 +400,6 @@ def handle_button(db, q, answer):
 
 def on_start(db, u, arg):
     uid, first, w = u["id"], u.get("first_name") or "?", walkers(db)
-    if uid in w: return show_menu(db, uid)
     code = kv(db, "code")
     if uid != OWNER_ID and not (code and arg == f"w_{code}"): return send(uid, "Deze bot is privé")
     if len(w) >= 2: return send(uid, "Er zijn al twee lopers")
@@ -408,10 +413,11 @@ def on_text(db, msg):
     """Buttons only: /start joins, anything else typed brings the menu back."""
     if msg["chat"]["type"] != "private" or "text" not in msg: return
     uid = msg["from"]["id"]
+    if uid in walkers(db):
+        delete(uid, msg["message_id"])
+        return show_menu(db, uid)
     if msg["text"].startswith("/start"): return on_start(db, msg["from"], msg["text"][6:].strip())
-    if uid not in walkers(db): return send(uid, "Deze bot is privé")
-    delete(uid, msg["message_id"])
-    show_menu(db, uid)
+    send(uid, "Deze bot is privé")
 
 def setup():
     """One-off bot profile: the name, and no commands anywhere."""
