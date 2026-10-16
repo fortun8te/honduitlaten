@@ -1,0 +1,10 @@
+# Synology Container Manager: Project → Create → this folder. Keeps dogbot.db and .env in this folder.
+services:
+  bot:
+    image: python:3.12-alpine
+    restart: always
+    working_dir: /app
+    volumes: [".:/app"]
+    env_file: .env
+    environment: [TZ=Europe/Amsterdam]
+    command: python3 -u dogbot.py
