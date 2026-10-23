@@ -5,3 +5,7 @@
 *.lock
 __pycache__/
 week_mock.png.tmp
+backups/
+*.sqlite
+*.sqlite3
+*.health.json

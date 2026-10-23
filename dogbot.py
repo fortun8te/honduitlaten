@@ -1,5 +1,5 @@
 """Dog-walk rotation bot. Telegram DMs, long polling, SQLite."""
-import fcntl, html, json, os, re, secrets, sqlite3, sys, time, urllib.error, urllib.request
+import fcntl, html, json, os, re, secrets, signal, sqlite3, sys, time, urllib.error, urllib.request
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -49,19 +49,19 @@ S = {  # key: (English, Nederlands)
     "pcover_live": ("{name}'s got it", "{name} doet 't"),
     "sorted": ("already sorted", "al geregeld"),
     "months": ("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", "jan feb mrt apr mei jun jul aug sep okt nov dec"),
-    "week": ("week {span}", "week {span}"),
+    "week": ("Planning · {span}", "Planning · {span}"),
     "you": ("you", "jij"),
     "solo": ("other walker's not in yet, you've got both", "andere loper zit er nog niet in, jij doet alles"),
-    "too_far": ("max 2 weeks ahead", "max 2 weken vooruit"),
+    "too_far": ("Plan up to 30 days ahead. Choose dates within that month.", "Plan tot 30 dagen vooruit. Kies datums binnen die maand."),
     "b_next": ("next week ▶", "volgende week ▶"),
-    "b_prev": ("◀ this week", "◀ deze week"),
+    "b_prev": ("◀ Previous week", "◀ Vorige week"),
     "full_parents": ("already 2 parents", "al 2 ouders"),
     "commands": ("/week · /lang", "/week · /lang"),
     "taken": ("{day}'s yours", "{day} is van jou"),
     "target_off": ("{name} can't then", "{name} kan dan niet"),
     "asked": ("asked {name}", "{name} gevraagd"),
-    "ask_take": ("{name} asks: can you take {day}?", "{name} vraagt: kan jij {day}?"),
-    "ask_give": ("{name} wants your {day}", "{name} wil jouw {day}"),
+    "ask_take": ("{name} asks: can you take the dogs on {day}? Dishes move to the other walker unless already done or past 21:00.", "{name} vraagt: kan jij de honden op {day} doen? De afwas gaat naar de ander, behalve als die al klaar is of na 21:00."),
+    "ask_give": ("{name} wants to take the dogs on {day}. Dishes move to you unless already done or past 21:00. Agree?", "{name} wil de honden op {day} overnemen. De afwas gaat naar jou, behalve als die al klaar is of na 21:00. Akkoord?"),
     "declined": ("no swap", "niet geruild"),
     "req_yes": ("👍 {name} said yes, {day} goes to {walker}", "👍 {name} zei ja, {day} is voor {walker}"),
     "req_no": ("{name} said no to {day}", "{name} zei nee op {day}"),
@@ -94,6 +94,41 @@ S = {  # key: (English, Nederlands)
     "b_nin": ("🚫 i'm in", "🚫 ik kan toch"),
     "b_back": ("← back", "← terug"),
 }
+S.update({
+    "b_home": ("🏠 Today", "🏠 Vandaag"),
+    "b_help": ("How it works", "Hoe werkt het?"),
+    "b_language": ("Language", "Taal"),
+    "b_points": ("Points", "Punten"),
+    "points_title": ("Points · {month} {year}", "Punten · {month} {year}"),
+    "points_rule": ("1 point for each completed chore. Taking over counts once you tap Done.", "1 punt per afgeronde taak. Overnemen telt zodra je op Klaar tikt."),
+    "points_own": ("Your points this month: {points}", "Jouw punten deze maand: {points}"),
+    "points_total": ("{name}: {points}", "{name}: {points}"),
+    "b_invite": ("Invite family", "Gezin uitnodigen"),
+    "b_plan": ("📅 Planning", "📅 Planning"),
+    "b_nin": ("I'm available again", "Ik kan weer"),
+    "b_nswap": ("Request swap", "Ruil aanvragen"),
+    "today": ("Today · {day}", "Vandaag · {day}"),
+    "dogs_label": ("🐕 Dogs", "🐕 Honden"),
+    "dishes_label": ("🍽 Dishes", "🍽 Afwas"),
+    "planned": ("planned", "gepland"),
+    "waiting": ("still to do", "nog te doen"),
+    "done_status": ("done {time}", "klaar {time}"),
+    "parent_status": ("parent taking over, still to do", "ouder neemt over, nog te doen"),
+    "unassigned": ("nobody assigned", "niemand ingedeeld"),
+    "missed_status": ("not confirmed; bot was offline", "niet bevestigd; bot was offline"),
+    "off_status": ("Unavailable: {names}", "Kan niet: {names}"),
+    "pending_status": ("⇄ Swap awaiting a reply", "⇄ Ruil wacht op antwoord"),
+    "swap_scope": ("A planning swap changes dogs and dishes. Dishes already finished or past 21:00 stay as they are. Dogs can change until 23:00.", "Een ruil in de planning verandert honden en afwas. Afwas die klaar is of na 21:00 blijft staan. Honden kunnen tot 23:00 wisselen."),
+    "week_hint": ("Tap a day for details and availability.", "Tik op een dag voor details en beschikbaarheid."),
+    "solo": ("Waiting for the second walker. Until then, the only walker has both chores.", "Wachten op de tweede loper. Tot die tijd doet de enige loper beide taken."),
+    "hi_walker": ("Welcome, {name}! You and the other walker share dogs and dishes.\nReminders: dishes at 18:30, dogs at 21:45. Tap Done after finishing. Can't passes only that chore on.\nUse Today or the planning below. Typed changes show a preview before you confirm.", "Welkom, {name}! Jullie verdelen samen de honden en de afwas.\nHerinneringen: afwas om 18:30, honden om 21:45. Tik op Klaar zodra het gedaan is. Kan niet geeft alleen die taak door.\nGebruik Vandaag of de planning hieronder. Getypte wijzigingen krijg je eerst ter bevestiging te zien."),
+    "hi_parent": ("Welcome! You can see both chores and the planning here. You'll hear when the dogs are out, or when help is needed. You can take over an unfinished chore below.", "Welkom! Hier zie je beide taken en de planning. Je hoort het als de honden uit zijn of als er hulp nodig is. Een openstaande taak kun je hieronder overnemen."),
+    "help_walker": ("Dishes reminder: 18:30. Dogs reminder: 21:45.\nDone records that chore as finished. Can't passes only that chore to the other walker, until 21:00 for dishes or 23:00 for dogs.\nPlanning: choose a day to mark yourself unavailable or request a swap. The other walker must accept a swap. Unavailability applies to both chores.\nYou can also type \"not Friday\". Check the preview before saving.", "Afwasherinnering: 18:30. Hondenherinnering: 21:45.\nKlaar registreert die taak als gedaan. Kan niet geeft alleen die taak aan de andere loper, tot 21:00 voor afwas en 23:00 voor honden.\nPlanning: kies een dag om aan te geven dat je niet kan of om een ruil aan te vragen. De andere loper moet een ruil accepteren. Niet beschikbaar geldt voor beide taken.\nJe kunt ook \"kan niet vrijdag\" typen. Controleer het overzicht voordat je opslaat."),
+    "help_parent": ("Today shows who is doing each chore and whether it is finished. Planning goes up to 30 days ahead.\nIf a chore is still unfinished at 21:00 for dishes or 23:00 for dogs, you'll get an alert. Tap I'll take it to cover it. Then tap Done once you have finished.", "Vandaag toont wie welke taak doet en of die klaar is. Je kunt tot 30 dagen vooruit plannen.\nAls afwas om 21:00 of honden om 23:00 nog niet klaar is, krijg je een melding. Tik op Ik doe 't om over te nemen. Tik daarna op Klaar zodra je het gedaan hebt."),
+    "huh": ("I couldn't read that. Choose a day in Planning, or type \"not Friday\".", "Dat begreep ik niet. Kies een dag in de planning, of typ \"kan niet vrijdag\"."),
+    "commands": ("Use the buttons below to see today, plan ahead or get help.", "Gebruik de knoppen hieronder voor vandaag, de planning of uitleg."),
+})
+
 LANGS = ("en", "nl")
 
 # ---------- storage ----------
@@ -108,13 +143,23 @@ TABLES = {
 def connect(path=DB):
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA busy_timeout=5000")
     db.executescript("""
     CREATE TABLE IF NOT EXISTS members(id INTEGER PRIMARY KEY, name TEXT, role TEXT, joined INTEGER, lang TEXT DEFAULT 'en');
     CREATE TABLE IF NOT EXISTS off(id INTEGER, day TEXT, PRIMARY KEY(id, day));
     CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS outbox(
+        id INTEGER PRIMARY KEY, event TEXT UNIQUE, recipient INTEGER NOT NULL,
+        payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        next_try REAL NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending',
+        created REAL NOT NULL, expires REAL NOT NULL);
     """)
     migrate(db)
     for table, cols in TABLES.items(): db.execute(f"CREATE TABLE IF NOT EXISTS {table}({cols})")
+    have = {c[1] for c in db.execute("PRAGMA table_info(nights)")}
+    for column in ("cover_id", "cover_msg"):
+        if column not in have: db.execute(f"ALTER TABLE nights ADD COLUMN {column} INTEGER")
+    db.commit()
     return db
 
 def migrate(db):
@@ -149,6 +194,21 @@ def walks_in_month(db, uid, day, chore="dogs"):
     return db.execute("SELECT COUNT(*) FROM nights WHERE walker=? AND chore=? AND status='done' AND substr(day,1,7)=?",
                       (uid, chore, day.isoformat()[:7])).fetchone()[0]
 
+def monthly_points(db, today):
+    """One point per completed chore, credited to its actual person and scheduled month.
+
+    Scores are derived from the unique day/chore records, never incremented by taps.
+    This also carries existing history into the points view without a data migration.
+    """
+    result = []
+    for member in db.execute("SELECT * FROM members ORDER BY joined, id").fetchall():
+        points = db.execute(
+            "SELECT COUNT(*) FROM nights WHERE status='done' AND COALESCE(walker,cover_id)=? AND substr(day,1,7)=?",
+            (member["id"], today.isoformat()[:7])).fetchone()[0]
+        if member["role"] == "walker" or points:
+            result.append({"id": member["id"], "name": member["name"], "role": member["role"], "points": points})
+    return result
+
 def is_off(db, uid, day):
     return db.execute("SELECT 1 FROM off WHERE id=? AND day=?", (uid, day.isoformat())).fetchone() is not None
 
@@ -158,7 +218,7 @@ def pick(db, day, last=None, extra_counts=None):
     if o: return o[0]
     w = [m["id"] for m in members(db, "walker")]
     if not w: return None
-    if len(w) == 1: return w[0]
+    if len(w) == 1: return None if is_off(db, w[0], day) else w[0]
     a, b = w[:2]
     if last is None:
         r = db.execute("SELECT walker FROM nights WHERE day<? AND chore='dogs' AND walker IS NOT NULL ORDER BY day DESC LIMIT 1",
@@ -168,10 +228,7 @@ def pick(db, day, last=None, extra_counts=None):
     other = a if base == b else b
     off_base, off_other = is_off(db, base, day), is_off(db, other, day)
     if off_base and not off_other: return other
-    if off_base and off_other:
-        c = extra_counts or {}
-        cb, co = walks_in_month(db, base, day) + c.get(base, 0), walks_in_month(db, other, day) + c.get(other, 0)
-        return other if co < cb else base
+    if off_base and off_other: return None
     return base
 
 def week(db, today, n=7, skip=0):
@@ -191,6 +248,7 @@ def dishes(db, day, dog, sent=True):
     for table in ("nights", "overrides")[0 if sent else 1:]:
         r = db.execute(f"SELECT walker FROM {table} WHERE day=? AND chore='dishes'", (day.isoformat(),)).fetchone()
         if r: return r[0]
+    if dog is None: return None
     o = next((m["id"] for m in members(db, "walker") if m["id"] != dog), None)
     if not o or (is_off(db, o, day) and not is_off(db, dog, day)): return dog
     return o
@@ -214,7 +272,7 @@ def parse_ranges(t, today):
     days = []
     def wd(m):
         a, b = m.group(1), m.group(2)
-        if a not in WD or b not in WD or len(a) < 3 or len(b) < 3: return m.group(0)
+        if a not in WD or b not in WD: return m.group(0)
         start = today + timedelta(days=(WD[a] - today.weekday()) % 7)
         days.extend(date_range(start, start + timedelta(days=(WD[b] - WD[a]) % 7)))
         return " "
@@ -249,6 +307,9 @@ def parse_days(text, today):
         if d >= today: found.add(d)
     if re.search(r"\b(tonight|today|vanavond|vandaag)\b", t): add(today)
     if re.search(r"\b(tomorrow|tmrw|morgen)\b", t): add(today + timedelta(days=1))
+    if re.search(r"\b(day after tomorrow|overmorgen)\b", t):
+        found.discard(today + timedelta(days=1))
+        add(today + timedelta(days=2))
     if re.search(r"\b(weekend|wknd)\b", t):
         sat = today + timedelta(days=(5 - today.weekday()) % 7)
         if today.weekday() == 6: sat = today - timedelta(days=1)
@@ -259,12 +320,12 @@ def parse_days(text, today):
             if nxt: add(today + timedelta(days=7 - today.weekday() + WD[w]))
             else: add(today + timedelta(days=(WD[w] - today.weekday()) % 7))
     def month_day(dn, mo):
-        try:
-            d = date(today.year, mo, dn)
-        except ValueError:
-            return
-        if d < today: d = d.replace(year=today.year + 1)
-        add(d)
+        for year in range(today.year, today.year + 5):
+            try: d = date(year, mo, dn)
+            except ValueError: continue
+            if d >= today:
+                add(d)
+                return
     for dn, mo in re.findall(r"\b(\d{1,2})[/-](\d{1,2})\b", t): month_day(int(dn), int(mo))
     for dn, mn in re.findall(r"\b(\d{1,2})(?:st|nd|rd|th|e)?\s+([a-z]{3})", t):
         if mn in MONTHS: month_day(int(dn), MONTHS[mn])
@@ -358,17 +419,24 @@ def apply_claim(db, target, days, chore="dogs"):
 
 TOKEN = os.environ.get("DOGS_TELEGRAM_BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID") or 0)  # Michael: the only one who can start the bot and invite
-RETRY = (0, 1, 3, 9)  # seconds between send attempts
-MAX_PAGE = 1          # /week pages: this week and next
-AHEAD = 14            # planning horizon in days
+RETRY = (0, 1)         # short retries; persisted notifications retry on later ticks
+AHEAD = 31            # today plus the next 30 days
+MAX_PAGE = (AHEAD - 1) // 7
 
-def log(*a): print(datetime.now(TZ).strftime("%F %T"), *a, file=sys.stderr, flush=True)
+def log(*a):
+    text = " ".join(map(str, a))
+    if TOKEN: text = text.replace(TOKEN, "[redacted]")
+    text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot[redacted]", text)
+    print(datetime.now(TZ).strftime("%F %T"), text, file=sys.stderr, flush=True)
 
 def api(method, **params):
     req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/{method}",
                                  data=json.dumps(params).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        return json.load(r)["result"]
+    with urllib.request.urlopen(req, timeout=40 if method == "getUpdates" else 10) as r:
+        data = json.load(r)
+    if not data.get("ok", True):
+        raise RuntimeError(f"Telegram rejected {method} ({data.get('error_code', 'unknown')})")
+    return data["result"]
 
 def send(chat, text, markup=None, html=False):
     """Message id; False if the user blocked or never started the bot (403); None on other failures."""
@@ -378,12 +446,17 @@ def send(chat, text, markup=None, html=False):
         try:
             return api("sendMessage", **p)["message_id"]
         except urllib.error.HTTPError as e:
-            log("send", chat, e.code)
-            if e.code == 403: return False
-            if e.code == 429:
-                time.sleep(min(json.loads(e.read() or b"{}").get("parameters", {}).get("retry_after", 1), 10))
-                return None
-            if e.code == 400: return None
+            try:
+                log("send", chat, e.code)
+                if e.code == 403: return False
+                if e.code == 429:
+                    try: delay = float(json.loads(e.read() or b"{}").get("parameters", {}).get("retry_after", 1))
+                    except (ValueError, TypeError, AttributeError): delay = 1
+                    time.sleep(max(0, min(delay, 10)))
+                    return None
+                if e.code == 400: return None
+            finally:
+                if e.fp is not None: e.close()
         except Exception as e:
             log("send", chat, e)
     return None
@@ -395,10 +468,13 @@ def edit(chat, msg, text, markup=None, html=False):
             **({"reply_markup": markup} if markup else {}), **({"parse_mode": "HTML"} if html else {}))
         return True
     except urllib.error.HTTPError as e:
-        body = e.read()
-        if b"not modified" in body: return True
-        log("edit", chat, e.code)
-        return False if b"not found" in body else None
+        try:
+            body = e.read()
+            if b"not modified" in body: return True
+            log("edit", chat, e.code)
+            return False if b"not found" in body else None
+        finally:
+            if e.fp is not None: e.close()
     except Exception as e:
         log("edit", chat, e)
 
@@ -416,8 +492,45 @@ def tell(db, chat, msg, key, markup=None, **kw):
 
 def tell_parents(db, key, markup=None, **kw):
     for p in members(db, "parent"):
-        r = say(db, p["id"], key, markup, **kw)
-        log("parent", p["id"], key, {False: "BLOCKED", None: "FAILED"}.get(r, "sent"))
+        event = f"notice:{now().date()}:{key}:{p['id']}:{json.dumps(kw, sort_keys=True)}"
+        queue_notice(db, p["id"], tr(lang_of(db, p["id"]), key, **kw), markup, event)
+
+def queue_notice(db, uid, text, markup=None, event=None, valid=None):
+    """Persist before sending. Failed parent notifications survive a process restart."""
+    payload = json.dumps({"text": text, "markup": markup, "valid": valid})
+    stamp = time.time()
+    db.execute("INSERT OR IGNORE INTO outbox(event,recipient,payload,created,expires) VALUES(?,?,?,?,?)",
+               (event or secrets.token_hex(12), uid, payload, stamp, stamp + 86400))
+    db.commit()
+    drain_outbox(db, event)
+
+def drain_outbox(db, event=None):
+    stamp = time.time()
+    sql = "SELECT * FROM outbox WHERE state='pending' AND next_try<=?"
+    args = [stamp]
+    if event: sql += " AND event=?"; args.append(event)
+    for row in db.execute(sql + " ORDER BY id LIMIT 4", args).fetchall():
+        p = json.loads(row["payload"])
+        valid = p.get("valid")
+        current = night(db, date.fromisoformat(valid["day"]), valid["chore"]) if valid else None
+        expired = stamp >= row["expires"] or (valid and (not current or current["status"] not in valid["statuses"]
+                  or not done_open(date.fromisoformat(valid["day"]), now())))
+        if expired:
+            db.execute("UPDATE outbox SET state='expired' WHERE id=?", (row["id"],)); db.commit(); continue
+        result = send(row["recipient"], p["text"], p["markup"])
+        state = "blocked" if result is False else "sent" if result else "pending"
+        wait = min(300, 15 * 2 ** min(row["attempts"], 5))
+        db.execute("UPDATE outbox SET state=?, attempts=attempts+1, next_try=? WHERE id=?",
+                   (state, stamp + wait, row["id"]))
+        db.commit()
+
+def parent_help(db, day, chore, key):
+    recipients = members(db, "parent") or members(db, "walker")[:1]
+    for p in recipients:
+        uid, lang = p["id"], lang_of(db, p["id"])
+        markup = {"inline_keyboard": [[{"text": tr(lang, "b_pcover"), "callback_data": f"pcover:{chore}:{day}"}]]} if p["role"] == "parent" else menu_markup(db, uid)
+        queue_notice(db, uid, tr(lang, K(key, chore)), markup, f"alert:{day}:{chore}:{key}:{uid}",
+                     {"day": str(day), "chore": chore, "statuses": ["nobody"] if key == "nobody_parents" else ["on"]})
 
 def buttons(db, uid, *keys):
     lang = lang_of(db, uid)
@@ -436,6 +549,10 @@ def pending(db, uid, msg, value=None):
     db.execute("DELETE FROM kv WHERE k=?", (k,)); db.commit()
     return v and json.loads(v)
 
+def peek_pending(db, uid, msg):
+    value = kv(db, f"p_{uid}_{msg}")
+    return json.loads(value) if value else None
+
 def all_pending(db):
     return [(k, json.loads(v)) for k, v in db.execute("SELECT k, v FROM kv WHERE k LIKE 'p\\_%' ESCAPE '\\'")]
 
@@ -450,6 +567,10 @@ def prune(db, t):
     for k, p in all_pending(db):
         stale = not swap_valid(db, p, t) if p["type"] == "swap" else max(p["days"]) < t.date().isoformat()
         if stale: db.execute("DELETE FROM kv WHERE k=?", (k,))
+    cutoff = (t.date() - timedelta(days=30)).isoformat()
+    db.execute("DELETE FROM off WHERE day<?", (cutoff,))
+    db.execute("DELETE FROM overrides WHERE day<?", (cutoff,))
+    db.execute("DELETE FROM outbox WHERE expires<?", (time.time() - 7 * 86400,))
     db.commit()
 
 def lang_view(lang):
@@ -457,70 +578,204 @@ def lang_view(lang):
         {"text": ("✓ " if l == lang else "") + label, "callback_data": "lang:" + l}
         for l, label in zip(LANGS, ("English", "Nederlands"))]]}
 
+def menu_markup(db, uid):
+    lang = lang_of(db, uid)
+    button = lambda key, data: {"text": tr(lang, "b_" + key), "callback_data": data}
+    rows = [[button("home", "home"), button("plan", "plan")],
+            [button("points", "points"), button("help", "help")],
+            [button("language", "language")]]
+    if uid == OWNER_ID: rows[-1].append(button("invite", "invite"))
+    return {"inline_keyboard": rows}
+
+
+def chore_status(db, uid, day, chore, assigned, lang):
+    n = night(db, day, chore)
+    who_id = (n["walker"] or n["cover_id"]) if n else assigned
+    who = tr(lang, "you") if who_id == uid else html.escape(name(db, who_id)) if who_id else tr(lang, "unassigned")
+    status = n["status"] if n else "planned"
+    if status == "done": state = "✅ " + tr(lang, "done_status", time=n["done_at"] or "").strip()
+    elif status == "parent":
+        cover = n["cover_id"] if "cover_id" in n.keys() else None
+        person = html.escape(name(db, cover)) if cover else ""
+        return (person + " · " if person else "") + tr(lang, "parent_status")
+    elif status == "missed": return tr(lang, "missed_status")
+    elif status == "nobody": return "⚠️ " + tr(lang, "unassigned")
+    else: state = tr(lang, "waiting" if n else "planned")
+    return f"{who} · {state}"
+
+
+def day_details(db, uid, day, dog, lang):
+    dish = dishes(db, day, dog)
+    lines = [f"{tr(lang, 'dishes_label')} 18:30 · {chore_status(db, uid, day, 'dishes', dish, lang)}",
+             f"{tr(lang, 'dogs_label')} 21:45 · {chore_status(db, uid, day, 'dogs', dog, lang)}"]
+    off = [html.escape(m["name"]) for m in members(db, "walker") if is_off(db, m["id"], day)]
+    if off: lines.append(tr(lang, "off_status", names=", ".join(off)))
+    if any(p.get("type") == "swap" and day.isoformat() in p.get("owners", {}) for _, p in all_pending(db)):
+        lines.append(tr(lang, "pending_status"))
+    return lines
+
+
 def week_view(db, today, lang="en", page=0, uid=None):
-    """Overview as text (one line per night, today bold), days as compact buttons, 4 per row."""
-    rows = week(db, today, skip=7 * page)
-    swaps = {d for _, p in all_pending(db) if p["type"] == "swap" for d in p["owners"]}
+    last_page = (AHEAD - 1) // 7
+    page = max(0, min(last_page, page))
+    rows = week(db, today, n=min(7, AHEAD - 7 * page), skip=7 * page)
     a, b = rows[0][0], rows[-1][0]
-    m = lambda d: month(d, lang).lower()
-    span = f"{a.day}–{b.day} {m(b)}" if a.month == b.month else f"{a.day} {m(a)}–{b.day} {m(b)}"
-    lines = [f"<b>{tr(lang, 'week', span=span)}</b>"]
-    if len(members(db, "walker")) < 2: lines.append(f"<i>{tr(lang, 'solo')}</i>")
-    lines.append("")
-    for d, w in rows:
-        who = tr(lang, "you") if w == uid else html.escape(name(db, w)) if w else "—"
-        off = " 🚫" if any(is_off(db, x["id"], d) for x in members(db, "walker")) else ""
-        line = f"{fmt(d, lang).lower()}  {'⇄ ' if d.isoformat() in swaps else ''}{who}{off}"
-        lines.append(f"<b>{line}</b>" if d == today else line)
-    days = [{"text": fmt(d, lang).lower(), "callback_data": f"wk:{d}:{page}"} for d, _ in rows]
-    nav = {"text": tr(lang, "b_next"), "callback_data": "wp:1"} if page == 0 else {"text": tr(lang, "b_prev"), "callback_data": "wp:0"}
-    return "\n".join(lines), {"inline_keyboard": [days[:4], days[4:], [nav]]}
+    span = f"{fmt(a, lang)} {month(a, lang)} – {fmt(b, lang)} {month(b, lang)}"
+    lines = [f"<b>{tr(lang, 'week', span=span)}</b>",
+             f"{tr(lang, 'dogs_label')} 21:45 · {tr(lang, 'dishes_label')} 18:30", ""]
+    walkers = members(db, "walker")
+    if len(walkers) == 1: lines.append(tr(lang, "solo"))
+    pending_days = {d for _, p in all_pending(db) if p.get("type") == "swap" for d in p.get("owners", {})}
+    def compact(day, chore, assigned):
+        n = night(db, day, chore)
+        actual = (n["walker"] or n["cover_id"]) if n else assigned
+        if n and n["status"] == "parent":
+            actual = n["cover_id"] if "cover_id" in n.keys() else None
+        who = tr(lang, "you") if actual == uid else html.escape(name(db, actual)) if actual else tr(lang, "unassigned")
+        if n and n["status"] == "done": return who + " ✓" + (" " + n["done_at"] if n["done_at"] else "")
+        if n and n["status"] == "parent": return who + " 🙋"
+        if n and n["status"] == "missed": return tr(lang, "missed_status")
+        return who if actual else "⚠️ " + who
+    for day, dog in rows:
+        lines.append(f"<b>{fmt(day, lang)}</b>  🐕 {compact(day, 'dogs', dog)} · 🍽 {compact(day, 'dishes', dishes(db, day, dog))}")
+        off = [html.escape(m["name"]) for m in walkers if is_off(db, m["id"], day)]
+        if off: lines.append("  " + tr(lang, "off_status", names=", ".join(off)))
+        if day.isoformat() in pending_days: lines.append("  " + tr(lang, "pending_status"))
+    lines.extend(["", tr(lang, "week_hint")])
+    days = [{"text": fmt(d, lang), "callback_data": f"wk:{d}:{page}"} for d, _ in rows]
+    nav = []
+    if page > 0: nav.append({"text": tr(lang, "b_prev"), "callback_data": f"wp:{page - 1}"})
+    if page < last_page: nav.append({"text": tr(lang, "b_next"), "callback_data": f"wp:{page + 1}"})
+    keyboard = [days[i:i + 4] for i in range(0, len(days), 4)]
+    if nav: keyboard.append(nav)
+    return "\n".join(lines), {"inline_keyboard": keyboard + menu_markup(db, uid)["inline_keyboard"]}
+
+
 
 def night_view(db, uid, day, page):
-    """One night: who's on what, and only the buttons that apply."""
     t, lang = now(), lang_of(db, uid)
-    cb = lambda k, style: {"text": tr(lang, "b_" + k), "callback_data": f"{k}:{day}:{page}", "style": style}
     cur, other = owner(db, day, t.date()), other_walker(db, uid)
-    who = lambda w: tr(lang, "you") if w == uid else html.escape(name(db, w)) if w else "—"
-    dish = dishes(db, day, cur) if cur else None
-    text = f"<b>{fmt(day, lang).lower()}</b>\n🐕 {who(cur)}\n🍽 {who(dish if other else None)}"
-    if is_off(db, uid, day): text += f"\n🚫 {tr(lang, 'you')}"
-    row = [cb("nin", "success")] if is_off(db, uid, day) else [cb("noff", "danger")]
-    if not cur: row.append(cb("ntake", "success"))
-    elif cur != uid or not is_off(db, other, day): row.append(cb("nswap", "primary"))
-    return text, {"inline_keyboard": [row, [{"text": tr(lang, "b_back"), "callback_data": f"wp:{page}"}]]}
+    lines = [f"<b>{fmt(day, lang)} {month(day, lang)}</b>"] + day_details(db, uid, day, cur, lang)
+    rows = []
+    dog_row = night(db, day)
+    editable = not dog_row or dog_row["status"] in ("on", "nobody")
+    if role_of(db, uid) == "walker" and editable and day >= t.date() and can_pass(day, t):
+        cb = lambda k: {"text": tr(lang, "b_" + k), "callback_data": f"{k}:{day}:{page}"}
+        row = [cb("nin" if is_off(db, uid, day) else "noff")]
+        if not cur: row.append(cb("ntake"))
+        elif other and (cur != uid or not is_off(db, other, day)): row.append(cb("nswap"))
+        rows.append(row)
+        lines.extend(["", tr(lang, "swap_scope")])
+    if day == t.date(): rows.extend(today_actions(db, uid, day, t))
+    rows.append([{"text": tr(lang, "b_back"), "callback_data": f"wp:{page}"}])
+    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+
+
+def today_actions(db, uid, day, t):
+    rows, lang = [], lang_of(db, uid)
+    for chore in ("dishes", "dogs"):
+        n = night(db, day, chore)
+        if not done_open(day, t): continue
+        label = tr(lang, chore + "_label")
+        if not n:
+            dog = owner(db, day, day)
+            assigned = dog if chore == "dogs" else dishes(db, day, dog)
+            if day == t.date() and role_of(db, uid) == "walker" and assigned == uid:
+                rows.append([{"text": label + " · " + tr(lang, "b_done"), "callback_data": f"done:{chore}:{day}"}])
+            continue
+        if day != t.date(): label = fmt(day, lang) + " · " + label
+        if role_of(db, uid) == "walker" and n["walker"] == uid and n["status"] == "on":
+            row = [{"text": label + " · " + tr(lang, "b_done"), "callback_data": f"done:{chore}:{day}"}]
+            if can_pass(day, t, chore): row.append({"text": tr(lang, "b_cant"), "callback_data": f"cant:{chore}:{day}"})
+            rows.append(row)
+        elif role_of(db, uid) == "parent" and n["status"] == "parent" and "cover_id" in n.keys() and n["cover_id"] == uid:
+            rows.append([{"text": label + " · " + tr(lang, "b_done"), "callback_data": f"pdone:{chore}:{day}"}])
+        elif role_of(db, uid) == "parent" and n["status"] in ("on", "nobody"):
+            rows.append([{"text": label + " · " + tr(lang, "b_pcover"), "callback_data": f"pcover:{chore}:{day}"}])
+    return rows
+
+
+def home_view(db, uid):
+    t, lang = now(), lang_of(db, uid)
+    day = t.date()
+    dog = owner(db, day, day)
+    lines = [f"<b>{tr(lang, 'today', day=fmt(day, lang))}</b>", ""] + day_details(db, uid, day, dog, lang)
+    if len(members(db, "walker")) == 1: lines.extend(["", tr(lang, "solo")])
+    rows = today_actions(db, uid, day, t)
+    if t.hour < DONE_UNTIL:
+        yesterday = day - timedelta(days=1)
+        actions = today_actions(db, uid, yesterday, t)
+        if actions:
+            lines.extend(["", f"<b>{fmt(yesterday, lang)} {month(yesterday, lang)}</b>"] + day_details(db, uid, yesterday, None, lang))
+            rows.extend(actions)
+    score = next((r["points"] for r in monthly_points(db, day) if r["id"] == uid), 0)
+    lines.extend(["", tr(lang, "points_own", points=score)])
+    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+
+
+def help_view(db, uid):
+    lang = lang_of(db, uid)
+    text = tr(lang, "help_parent" if role_of(db, uid) == "parent" else "help_walker")
+    if role_of(db, uid) == "walker": text += "\n\n" + tr(lang, "swap_scope")
+    text += "\n\n" + tr(lang, "points_rule")
+    return text, menu_markup(db, uid)
+
+
+def points_view(db, uid):
+    day, lang = now().date(), lang_of(db, uid)
+    lines = [tr(lang, "points_title", month=month(day, lang), year=day.year), ""]
+    for member in monthly_points(db, day):
+        label = tr(lang, "you") if member["id"] == uid else member["name"]
+        lines.append(tr(lang, "points_total", name=label, points=member["points"]))
+    lines.extend(["", tr(lang, "points_rule")])
+    return "\n".join(lines), menu_markup(db, uid)
+
 
 def view(db, uid, page, day=None):
+    if page == -1: return home_view(db, uid)
+    if page in (-2, -3, -4):
+        if page == -2: text, kb = help_view(db, uid)
+        elif page == -3: text, kb = points_view(db, uid)
+        else:
+            text, kb = lang_view(lang_of(db, uid))
+            kb["inline_keyboard"] += menu_markup(db, uid)["inline_keyboard"]
+        return html.escape(text), kb
     t = now()
-    if day and (day < t.date() or not can_pass(day, t)): day = None
+    if day and not (t.date() <= day < t.date() + timedelta(days=AHEAD)): day = None
     return night_view(db, uid, day, page) if day else week_view(db, t.date(), lang_of(db, uid), page, uid)
 
+
 def show(db, uid, msg, page, day=None):
-    """Edit a week message in place; the latest one per member is tracked for live updates."""
     text, kb = view(db, uid, page, day)
     r = edit(uid, msg, text, kb, html=True)
-    db.execute("UPDATE weekmsg SET page=?, day=?, sig=? WHERE id=? AND msg=?",
-               (page, day and day.isoformat(), text + json.dumps(kb), uid, msg)); db.commit()
+    if r:
+        db.execute("UPDATE weekmsg SET page=?, day=?, sig=? WHERE id=? AND msg=?",
+                   (page, day and day.isoformat(), text + json.dumps(kb), uid, msg)); db.commit()
     return r
 
-def open_week(db, uid):
-    """/week: a fresh message at the bottom; the old one is deleted."""
-    old = db.execute("SELECT msg FROM weekmsg WHERE id=?", (uid,)).fetchone()
-    if old:
-        try: api("deleteMessage", chat_id=uid, message_id=old["msg"])
-        except Exception as e: log("delete", uid, e)
-    text, kb = view(db, uid, 0)
+
+def open_week(db, uid, page=0):
+    """Send a fresh overview; keep the last usable view if delivery fails."""
+    text, kb = view(db, uid, page)
     m = send(uid, text, kb, html=True)
-    if m: db.execute("REPLACE INTO weekmsg(id, msg, page, day, sig) VALUES(?,?,0,NULL,?)", (uid, m, text + json.dumps(kb))); db.commit()
+    if m:
+        db.execute("REPLACE INTO weekmsg(id, msg, page, day, sig) VALUES(?,?,?,NULL,?)", (uid, m, page, text + json.dumps(kb)))
+        db.commit()
+    return m
+
+
+def open_home(db, uid):
+    return open_week(db, uid, -1)
+
 
 def refresh_weeks(db):
-    """Re-render every tracked week message; edit only the ones that changed."""
     for r in db.execute("SELECT * FROM weekmsg").fetchall():
         day = r["day"] and date.fromisoformat(r["day"])
         text, kb = view(db, r["id"], r["page"], day)
         if text + json.dumps(kb) == r["sig"]: continue
         if show(db, r["id"], r["msg"], r["page"], day) is False:
             db.execute("DELETE FROM weekmsg WHERE id=?", (r["id"],)); db.commit()
+
 
 def set_night(db, day, chore, **cols):
     db.execute(f"UPDATE nights SET {', '.join(c + '=?' for c in cols)} WHERE day=? AND chore=?",
@@ -551,9 +806,10 @@ def deliver(db, day, chore, uid, key="on", **kw):
     if msg is not False: return set_night(db, day, chore, walker=uid, msg=msg)
     tell_parents(db, "unreachable", name=name(db, uid))
     o = other_walker(db, uid)
-    if o and key == "on": return deliver(db, day, chore, o, "on_unreachable", name=name(db, uid))
+    if o and key == "on" and not is_off(db, o, date.fromisoformat(day)):
+        return deliver(db, day, chore, o, "on_unreachable", name=name(db, uid))
     set_night(db, day, chore, status="nobody", walker=None)
-    tell_parents(db, K("nobody_parents", chore))
+    parent_help(db, day, chore, "nobody_parents")
 
 def nightly(db, t, chore):
     """Tonight's message from its send time until the cutoff. The stored msg id is the sent flag.
@@ -564,28 +820,45 @@ def nightly(db, t, chore):
     if not n:
         dog = dict(week(db, t.date(), n=1)).get(t.date())
         uid = dog if chore == "dogs" else dog and dishes(db, t.date(), dog)
-        if uid is None: return
+        if uid is None:
+            if not members(db, "walker"): return
+            db.execute("INSERT INTO nights(day,chore,status) VALUES(?,?,'nobody')", (day, chore)); db.commit()
+            parent_help(db, day, chore, "nobody_parents")
+            return
         db.execute("INSERT INTO nights(day, chore, walker, status) VALUES(?,?,?,'on')", (day, chore, uid)); db.commit()
         n = night(db, t.date(), chore)
     if not n["msg"] and n["status"] == "on" and can_pass(t.date(), t, chore): deliver(db, day, chore, n["walker"])
 
 def missed_yesterday(db, t):
-    """Bot was down through all of last night: tell parents once."""
+    """Report unconfirmed past work after the Done window, including partial outages."""
+    if t.hour < DONE_UNTIL: return
     y = t.date() - timedelta(days=1)
     first = db.execute("SELECT MIN(joined) FROM members WHERE role='walker'").fetchone()[0]
-    if night(db, y) or not first or first > at(y, CHORES["dogs"][1]).timestamp(): return
-    db.execute("INSERT INTO nights(day, chore, status) VALUES(?, 'dogs', 'missed')", (y.isoformat(),)); db.commit()
-    tell_parents(db, "missed")
+    if not first: return
+    for chore in CHORES:
+        if not night(db, y, chore) and first <= at(y, CHORES[chore][1]).timestamp():
+            db.execute("INSERT INTO nights(day,chore,status) VALUES(?,?,'on')", (y.isoformat(), chore))
+    unresolved = db.execute("SELECT * FROM nights WHERE day<? AND status IN ('on','parent','nobody') ORDER BY day", (t.date().isoformat(),)).fetchall()
+    recipients = members(db, "parent") or members(db, "walker")[:1]
+    for n in unresolved:
+        for recipient in recipients:
+            lang = lang_of(db, recipient["id"])
+            label = tr(lang, n["chore"] + "_label")
+            text = (f"No completion confirmed: {label}, {n['day']}. Check with each other."
+                    if lang == "en" else f"Niet als klaar bevestigd: {label}, {n['day']}. Stem dit even met elkaar af.")
+            # Persist the notice before marking the unresolved row as history.
+            queue_notice(db, recipient["id"], text, menu_markup(db, recipient["id"]), f"unconfirmed:{n['day']}:{n['chore']}:{recipient['id']}")
+        set_night(db, n["day"], n["chore"], status="missed")
+    db.commit()
 
 def tick(db, t):
     missed_yesterday(db, t)
     for chore in CHORES:
         nightly(db, t, chore)
         if overdue(db, t, chore):
+            parent_help(db, t.date(), chore, "late")
             kv(db, f"late_{chore}_{t.date()}", "1")
-            for p in members(db, "parent"):
-                say(db, p["id"], K("late", chore), {"inline_keyboard": [[
-                    {"text": tr(lang_of(db, p["id"]), "b_pcover"), "callback_data": f"pcover:{chore}:{t.date()}"}]]})
+    drain_outbox(db)
     prune(db, t)
 
 def pass_night(db, n, uid, chat=None, msg=None, answer=None):
@@ -594,7 +867,8 @@ def pass_night(db, n, uid, chat=None, msg=None, answer=None):
     chore, cant = n["chore"], set(filter(None, n["cant"].split(","))) | {str(uid)}
     chat, msg = chat or uid, msg or n["msg"]
     o = other_walker(db, uid)
-    new = say_on(db, o, n["day"], chore, "on_passed", name=name(db, uid)) if o and str(o) not in cant else 0
+    available = o and str(o) not in cant and not is_off(db, o, date.fromisoformat(n["day"]))
+    new = say_on(db, o, n["day"], chore, "on_passed", name=name(db, uid)) if available else 0
     if new is None or new is False:
         if new is False: tell_parents(db, "unreachable", name=name(db, o))
         key = "retry" if new is None else "cant_reach"
@@ -605,7 +879,7 @@ def pass_night(db, n, uid, chat=None, msg=None, answer=None):
     set_night(db, n["day"], chore, status="nobody", walker=None, cant=",".join(cant))
     tell(db, chat, msg, "nobody")
     if o: say(db, o, K("nobody_either", chore), name=name(db, uid))
-    tell_parents(db, K("nobody_parents", chore))
+    parent_help(db, n["day"], chore, "nobody_parents")
 
 def move_tonight(db, n, new):
     """Tonight's message already went out: pass it to `new`."""
@@ -634,12 +908,22 @@ def handle_button(db, q, answer):
     uid, data = q["from"]["id"], q["data"]
     chat, msg = q["message"]["chat"]["id"], q["message"]["message_id"]
     lang, today = lang_of(db, uid), now().date()
+    role = role_of(db, uid)
+    if not role or chat != uid or q["message"]["chat"].get("type", "private") != "private":
+        return answer("private")
     kind, _, arg = data.partition(":")
+    if kind == "home": return show(db, uid, msg, -1)
+    if kind == "help": return show(db, uid, msg, -2)
+    if kind == "points": return show(db, uid, msg, -3)
+    if kind == "language": return show(db, uid, msg, -4)
+    if kind == "invite":
+        if uid != OWNER_ID: return answer("private")
+        return on_text(db, {"from": q["from"], "chat": {"type": "private"}, "text": "/invite"})
     if kind == "lang":
         arg = arg if arg in LANGS else "en"
         db.execute("UPDATE members SET lang=? WHERE id=?", (arg, uid)); db.commit()
         answer()
-        return edit(chat, msg, *lang_view(arg))
+        return show(db, uid, msg, -1)
     if kind == "wk":
         day, page = arg.split(":")
         return on_week_tap(db, uid, date.fromisoformat(day), chat, msg, answer, int(page))
@@ -653,31 +937,55 @@ def handle_button(db, q, answer):
         answer()
         return show(db, uid, msg, min(max(int(arg), 0), MAX_PAGE))
     if kind in ("accept", "no"):
+        if role != "walker": return answer("private")
         return on_swap_reply(db, uid, kind == "accept", chat, msg, answer)
     if kind in ("confirm", "cancel", "off", "walk"):
+        if role != "walker": return answer("private")
         return on_preview(db, uid, kind, today, chat, msg, answer)
     if kind == "pcover":
+        if role != "parent": return answer("private")
         return on_parent_cover(db, uid, arg, chat, msg, answer)
-    chore = arg or "dogs"
-    n = db.execute("SELECT * FROM nights WHERE msg=? AND walker=? AND chore=?", (msg, uid, chore)).fetchone()
-    if not n or n["status"] != "on": return answer()
+    if kind == "pdone": return on_parent_done(db, uid, arg, chat, msg, answer)
+    if kind not in ("done", "cant") or role != "walker": return answer("old")
+    chore, _, dated = arg.partition(":")
+    chore = chore or "dogs"
+    if chore not in CHORES: return answer("old")
+    n = night(db, date.fromisoformat(dated), chore) if dated else db.execute(
+        "SELECT * FROM nights WHERE msg=? AND walker=? AND chore=?", (msg, uid, chore)).fetchone()
+    if not n and dated == today.isoformat() and kind == "done":
+        dog = owner(db, today, today)
+        assigned = dog if chore == "dogs" else dishes(db, today, dog)
+        if assigned != uid: return answer("old")
+        db.execute("INSERT INTO nights(day,chore,walker,status) VALUES(?,?,?,'on')", (dated, chore, uid)); db.commit()
+        n = night(db, today, chore)
+    if not n or n["walker"] != uid or n["status"] != "on": return answer("settled")
     day, t = date.fromisoformat(n["day"]), now()
     if not done_open(day, t): return answer("old")
     if kind == "cant":
-        return pass_night(db, n, uid, chat, msg, answer) if can_pass(day, t, chore) else answer("too_late")
+        if not can_pass(day, t, chore): return answer("too_late")
+        pass_night(db, n, uid, uid, n["msg"], answer)
+        if dated: show(db, uid, msg, -1)
+        return
     hm = t.strftime("%H:%M")
     set_night(db, n["day"], chore, status="done", done_at=hm)
-    tell(db, chat, msg, K("walked", chore), hm=hm)
+    if n["msg"]: tell(db, uid, n["msg"], K("walked", chore), hm=hm)
+    if dated: show(db, uid, msg, -1)
     if chore == "dogs": tell_parents(db, "parent_done", name=name(db, uid), hm=hm)
 
 def ask(db, frm, to, days, back=None):
     """Ask the walker who isn't `frm` to agree that `to` walks `days`. Returns say()'s result."""
     rcpt, t = other_walker(db, frm), now()
+    if rcpt is None: return False
+    owners = {d.isoformat(): owner(db, d, t.date()) for d in days}
+    for key, existing in all_pending(db):
+        if (existing.get("type") == "swap" and existing.get("from") == frm and existing.get("to") == to
+                and existing.get("owners") == owners and swap_valid(db, existing, t)):
+            return int(key.rsplit("_", 1)[1])
     m = say(db, rcpt, "ask_take" if to == rcpt else "ask_give", buttons(db, rcpt, "accept", "no"),
             name=name(db, frm), day=fmt_days(days, lang_of(db, rcpt)))
     if not m: return m
     pending(db, rcpt, m, {"type": "swap", "from": frm, "to": to, "back": back,
-                          "owners": {d.isoformat(): owner(db, d, t.date()) for d in days}})
+                          "owners": owners})
     return m
 
 def night_open(db, uid, day, answer):
@@ -691,9 +999,9 @@ def night_open(db, uid, day, answer):
     return True
 
 def on_week_tap(db, uid, day, chat, msg, answer, page):
-    if not night_open(db, uid, day, answer): return
+    if not now().date() <= day < now().date() + timedelta(days=AHEAD): return answer("old")
     answer()
-    show(db, uid, msg, page, day)
+    show(db, uid, msg, min(max(page, 0), MAX_PAGE), day)
 
 def on_night_action(db, uid, kind, day, chat, msg, answer, page):
     if not night_open(db, uid, day, answer): return
@@ -708,6 +1016,7 @@ def on_night_action(db, uid, kind, day, chat, msg, answer, page):
 def undo_off(db, uid, day):
     """Back in: tonight's live dishes return to whoever the rota now picks."""
     clear_off(db, uid, [day])
+    reconcile_open_day(db, day)
     dog, dish = night(db, day), night(db, day, "dishes")
     if dish and dish["msg"] and dish["status"] == "on" and can_pass(day, now(), "dishes"):
         move_tonight(db, dish, dishes(db, day, dog["walker"] if dog else owner(db, day, now().date()), sent=False))
@@ -715,8 +1024,22 @@ def undo_off(db, uid, day):
 def take_empty(db, uid, day):
     n = night(db, day)
     if owner(db, day, now().date()): return
+    clear_off(db, uid, [day])
     apply_claim(db, uid, [day])
     if n: set_night(db, n["day"], "dogs", walker=uid, status="on", msg=None, cant="")
+    reconcile_open_day(db, day)
+
+def reconcile_open_day(db, day):
+    """Re-plan unassigned or unsent work when availability changes; completed work is history."""
+    t = now()
+    dog_row = night(db, day)
+    dog = dog_row["walker"] if dog_row and dog_row["status"] not in ("nobody", "missed") else pick(db, day)
+    for chore in CHORES:
+        n = night(db, day, chore)
+        if not n or not can_pass(day, t, chore): continue
+        if n["status"] != "nobody" and not (n["status"] == "on" and not n["msg"]): continue
+        who = dog if chore == "dogs" else dishes(db, day, dog, sent=False)
+        set_night(db, day.isoformat(), chore, walker=who, status="on" if who else "nobody", msg=None)
 
 def ask_swap(db, uid, day, chat, msg, answer, page):
     t, cur, other = now(), owner(db, day, now().date()), other_walker(db, uid)
@@ -727,14 +1050,17 @@ def ask_swap(db, uid, day, chat, msg, answer, page):
     show(db, uid, msg, page)
 
 def on_swap_reply(db, uid, ok, chat, msg, answer):
-    p, t = pending(db, uid, msg), now()
-    if not p or not swap_valid(db, p, t):
+    p, t = peek_pending(db, uid, msg), now()
+    if not p or p.get("type") != "swap": return answer("old")
+    if not swap_valid(db, p, t):
+        pending(db, uid, msg)
         answer("old")
         return tell(db, chat, msg, "old")
     answer()
     days, req = [date.fromisoformat(d) for d in p["owners"]], p["from"]
     lang = lang_of(db, req)
     if not ok:
+        pending(db, uid, msg)
         tell(db, chat, msg, "declined")
         return say(db, req, "req_no", name=name(db, uid), day=fmt_days(days, lang))
     clear_off(db, p["to"], days)
@@ -742,8 +1068,9 @@ def on_swap_reply(db, uid, ok, chat, msg, answer):
     for chore in CHORES:
         n = night(db, t.date(), chore)
         who = p["to"] if chore == "dogs" else dishes(db, t.date(), p["to"], sent=False)
-        if n and t.date() in days and n["msg"] and n["status"] == "on" and can_pass(t.date(), t, chore):
+        if n and t.date() in days and n["status"] in ("on", "nobody") and can_pass(t.date(), t, chore):
             move_tonight(db, n, who)
+    pending(db, uid, msg)
     dogs_only = t.date() in days and not can_pass(t.date(), t, "dishes")  # tonight's dishes are already history
     tell(db, chat, msg, "swapped_dogs" if dogs_only else "swapped", day=fmt_days(days, lang_of(db, uid)), walker=name(db, p["to"]))
     say(db, req, "req_yes", name=name(db, uid), day=fmt_days(days, lang), walker=name(db, p["to"]))
@@ -754,8 +1081,10 @@ def preview(db, uid, off, walk, target, msg=None):
     lines = ([tr(lang, "preview_off", days=fmt_days(off, lang))] if off else []) + \
             ([tr(lang, "preview_claim", name=name(db, target), days=fmt_days(walk, lang))] if walk else [])
     kb = buttons(db, uid, "confirm", "cancel")
-    if msg: edit(uid, msg, "\n".join(lines), kb)
+    if msg:
+        if not edit(uid, msg, "\n".join(lines), kb): return
     else: msg = send(uid, "\n".join(lines), kb)
+    if not msg: return
     pending(db, uid, msg, {"type": "preview", "target": target,
                            "off": [d.isoformat() for d in off], "walk": [d.isoformat() for d in walk],
                            "days": [d.isoformat() for d in off + walk]})
@@ -764,21 +1093,31 @@ def ask_day(db, uid, p, msg=None):
     """Unclear message: ask Off or Walk for each day in turn."""
     day = date.fromisoformat(p["days"][len(p["off"]) + len(p["walk"])])
     text, kb = tr(lang_of(db, uid), "which", day=fmt(day, lang_of(db, uid))), buttons(db, uid, "off", "walk")
-    if msg: edit(uid, msg, text, kb)
+    if msg:
+        if not edit(uid, msg, text, kb): return
     else: msg = send(uid, text, kb)
+    if not msg: return
     pending(db, uid, msg, p)
 
 def on_preview(db, uid, choice, today, chat, msg, answer):
-    p = pending(db, uid, msg)
-    if not p: return answer("old")
+    p = peek_pending(db, uid, msg)
+    if not p or p.get("type") not in ("ask", "preview"): return answer("old")
     answer()
-    if choice == "cancel": return tell(db, chat, msg, "cancelled")
+    if choice == "cancel":
+        pending(db, uid, msg)
+        return tell(db, chat, msg, "cancelled", menu_markup(db, uid))
     if choice in ("off", "walk"):
+        if p["type"] != "ask": return answer("old")
         p[choice].append(p["days"][len(p["off"]) + len(p["walk"])])
         if len(p["off"]) + len(p["walk"]) < len(p["days"]): return ask_day(db, uid, p, msg)
-    future = lambda key: [d for d in map(date.fromisoformat, p[key]) if d >= today]
+    future = lambda key: [d for d in map(date.fromisoformat, p[key]) if today <= d < today + timedelta(days=AHEAD)]
     off, walk = future("off"), future("walk")
     if choice != "confirm": return preview(db, uid, off, walk, p.get("target", uid), msg)
+    if p["type"] != "preview": return answer("old")
+    if not off and not walk:
+        pending(db, uid, msg)
+        return tell(db, chat, msg, "old", menu_markup(db, uid))
+    if any(not can_pass(d, now()) for d in off + walk): return answer("too_late")
     if off: confirm_off(db, uid, off)
     if walk and p["target"] == uid: confirm_walk(db, uid, walk)
     elif walk:
@@ -789,8 +1128,10 @@ def on_preview(db, uid, choice, today, chat, msg, answer):
             pending(db, uid, msg, p)  # keep the preview so Confirm can be tapped again
             return tell(db, chat, msg, "retry" if m is None else "cant_reach", buttons(db, uid, "confirm", "cancel"),
                         name=name(db, p["target"]))
-        return tell(db, chat, msg, "asked", name=name(db, p["target"]))
-    tell(db, chat, msg, "saved")
+        pending(db, uid, msg)
+        return tell(db, chat, msg, "asked", menu_markup(db, uid), name=name(db, p["target"]))
+    pending(db, uid, msg)
+    tell(db, chat, msg, "saved", menu_markup(db, uid))
 
 def confirm_off(db, uid, days):
     apply_off(db, uid, days)
@@ -800,7 +1141,11 @@ def confirm_off(db, uid, days):
         if not (n and t.date() in days and n["walker"] == uid and n["status"] == "on" and can_pass(t.date(), t, chore)):
             continue
         if n["msg"]: pass_night(db, n, uid)
-        else: set_night(db, n["day"], chore, walker=other_walker(db, uid) or uid)
+        else:
+            other = other_walker(db, uid)
+            who = other if other and not is_off(db, other, t.date()) else None
+            set_night(db, n["day"], chore, walker=who, status="on" if who else "nobody")
+            if who is None: parent_help(db, n["day"], chore, "nobody_parents")
 
 def confirm_walk(db, uid, days):
     t = now()
@@ -814,23 +1159,42 @@ def confirm_walk(db, uid, days):
 
 def on_parent_cover(db, uid, arg, chat, msg, answer):
     chore, _, day = arg.rpartition(":")
-    chore = chore if chore in CHORES else "dogs"
+    if role_of(db, uid) != "parent": return answer("private")
+    chore = chore or "dogs"
+    if chore not in CHORES: return answer("old")
     n = night(db, date.fromisoformat(day), chore)
-    if not n or n["status"] != "on" or not done_open(date.fromisoformat(day), now()):
+    if not n or n["status"] not in ("on", "nobody") or not done_open(date.fromisoformat(day), now()):
         answer("sorted")
         return tell(db, chat, msg, "sorted")
     answer()
     who = name(db, uid)
-    set_night(db, day, chore, status="parent", walker=None, done_at=now().strftime("%H:%M"))
-    tell(db, chat, msg, "pcover_me")
+    set_night(db, day, chore, status="parent", walker=None, done_at=None, cover_id=uid, cover_msg=msg)
+    markup = {"inline_keyboard": [[{"text": tr(lang_of(db, uid), "b_done"), "callback_data": f"pdone:{chore}:{day}"}],
+                                   [{"text": tr(lang_of(db, uid), "b_home"), "callback_data": "home"}]]}
+    tell(db, chat, msg, "pcover_me", markup)
     if n["walker"] and n["msg"]: tell(db, n["walker"], n["msg"], "pcover_live", name=who)
     for m in members(db, "walker") + members(db, "parent"):
         if m["id"] not in (n["walker"], uid): say(db, m["id"], K("pcover_all", chore), name=who)
 
+def on_parent_done(db, uid, arg, chat, msg, answer):
+    if role_of(db, uid) != "parent": return answer("private")
+    chore, day = arg.split(":", 1)
+    if chore not in CHORES: return answer("old")
+    d = date.fromisoformat(day)
+    n = night(db, d, chore)
+    if not n or n["status"] != "parent" or n["cover_id"] != uid: return answer("settled")
+    if not done_open(d, now()): return answer("old")
+    hm = now().strftime("%H:%M")
+    set_night(db, day, chore, status="done", done_at=hm)
+    if n["cover_msg"]: tell(db, uid, n["cover_msg"], K("walked", chore), hm=hm)
+    if msg != n["cover_msg"]: show(db, uid, msg, -1)
+    if chore == "dogs": tell_parents(db, "parent_done", name=name(db, uid), hm=hm)
+    answer("saved")
+
 def on_start(db, u, arg):
     uid, first = u["id"], u.get("first_name") or "?"
     lang = "nl" if (u.get("language_code") or "").startswith("nl") else "en"
-    if role_of(db, uid): return say(db, uid, "already_in")
+    if role_of(db, uid): return open_home(db, uid)
     if uid == OWNER_ID:
         role = "walker"
         if len(members(db, "walker")) >= 2: return send(uid, tr(lang, "full"))
@@ -842,12 +1206,9 @@ def on_start(db, u, arg):
         if role == "parent" and len(members(db, "parent")) >= 2: return send(uid, tr(lang, "full_parents"))
     db.execute("INSERT INTO members(id, name, role, joined, lang) VALUES(?,?,?,?,?)",
                (uid, first, role, int(time.time()), lang)); db.commit()
-    if role == "parent":
-        say(db, uid, "hi_parent")
-    else:
-        first_walker = len(members(db, "walker")) == 1
-        send(uid, tr(lang, "hi_walker", name=first) + (tr(lang, "hi_invite") if first_walker else ""),
-             {"inline_keyboard": [[plan_button(lang)]]})
+    greeting = tr(lang, "hi_parent") if role == "parent" else tr(lang, "hi_walker", name=first)
+    send(uid, greeting, menu_markup(db, uid))
+    open_home(db, uid)
     for m in members(db, "walker") + (members(db, "parent") if role == "walker" else []):
         if m["id"] != uid: say(db, m["id"], "joined", name=first)
 
@@ -856,22 +1217,27 @@ def on_text(db, msg):
     u, text = msg["from"], msg["text"].strip()
     uid = u["id"]
     if msg["chat"]["type"] != "private": return
-    if text.startswith("/start"): return on_start(db, u, text[6:].strip())
+    command, _, argument = text.partition(" ")
+    command = command.split("@")[0].lower()
+    if command == "/start": return on_start(db, u, argument.strip())
     role = role_of(db, uid)
     if not role: return send(uid, tr("en", "private"))
     lang, today = lang_of(db, uid), now().date()
-    if text == "/lang": return send(uid, *lang_view(lang))
-    if text == "/week": return open_week(db, uid)
-    if text == "/invite" and uid == OWNER_ID:
+    if command == "/lang": return open_week(db, uid, -4)
+    if command in ("/today", "/home", "/menu"): return open_home(db, uid)
+    if command == "/help": return open_week(db, uid, -2)
+    if command == "/points": return open_week(db, uid, -3)
+    if command == "/week": return open_week(db, uid)
+    if command == "/invite" and uid == OWNER_ID:
         code = kv(db, "code", secrets.token_hex(4))  # new code each time: older links stop working
         link = f"https://t.me/{kv(db, 'bot')}?start=%s_{code}"
-        return say(db, uid, "invite", w=link % "walker", p=link % "parent")
-    if text.startswith("/"): return say(db, uid, "commands")
-    if role != "walker": return say(db, uid, "hi_parent")
+        return say(db, uid, "invite", menu_markup(db, uid), w=link % "walker", p=link % "parent")
+    if text.startswith("/"): return say(db, uid, "commands", menu_markup(db, uid))
+    if role != "walker": return send(uid, *help_view(db, uid))
     days = parse_days(text, today)
-    if not days: return say(db, uid, "huh")
-    days = [d for d in days if d < today + timedelta(days=AHEAD)]
-    if not days: return say(db, uid, "too_far")
+    if not days: return say(db, uid, "huh", menu_markup(db, uid))
+    if any(d >= today + timedelta(days=AHEAD) for d in days):
+        return say(db, uid, "too_far", menu_markup(db, uid))
     o = other_walker(db, uid)
     kind, target = intent(text, uid, o, name(db, o) if o else "")
     if kind == "off": return preview(db, uid, days, [], uid)
@@ -880,48 +1246,145 @@ def on_text(db, msg):
     ask_day(db, uid, {"type": "ask", "target": uid, "off": [], "walk": [], "days": [d.isoformat() for d in days]})
 
 def setup():
-    """One-off bot profile: name and commands (en + nl); /invite only in the owner chat."""
+    """Telegram's menu remains usable without memorising commands."""
     log("bot", api("getMe")["username"])
     api("setMyName", name="Honduitlaten")
-    for lang, cmds in [(None, ("plan", "language", "links for the others")),
-                       ("nl", ("planning", "taal", "links voor de rest"))]:
+    for lang, descriptions in [(None, ("Today and open chores", "Plan up to 30 days ahead", "Points this month", "How it works", "Language", "Invite family")),
+                               ("nl", ("Vandaag en openstaande taken", "Plan tot 30 dagen vooruit", "Punten deze maand", "Hoe werkt het?", "Taal", "Gezin uitnodigen"))]:
         extra = {"language_code": lang} if lang else {}
-        cmd = [{"command": c, "description": d} for c, d in zip(("week", "lang", "invite"), cmds)]
-        api("setMyCommands", commands=cmd[:2], **extra)
-        api("setMyCommands", commands=cmd, scope={"type": "chat", "chat_id": OWNER_ID}, **extra)
+        commands = [{"command": c, "description": d} for c, d in zip(("today", "week", "points", "help", "lang", "invite"), descriptions)]
+        api("setMyCommands", commands=commands[:-1], **extra)
+        if OWNER_ID: api("setMyCommands", commands=commands, scope={"type": "chat", "chat_id": OWNER_ID}, **extra)
 
-LOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dogbot.lock")
+
+LOCK = os.environ.get("DOGBOT_LOCK", DB + ".lock")
+HEALTH = os.environ.get("DOGBOT_HEALTH", DB + ".health.json")
+HEALTH_STATE = {}
+STOP = False
+
+
+def write_health(force=False):
+    """One small atomic heartbeat per minute; never include configuration or chat text."""
+    stamp = time.time()
+    if not force and stamp - HEALTH_STATE.get("written_at", 0) < 60: return
+    HEALTH_STATE["written_at"] = stamp
+    temporary = HEALTH + ".tmp"
+    try:
+        with open(temporary, "w") as stream:
+            json.dump(HEALTH_STATE, stream)
+        os.replace(temporary, HEALTH)
+    except OSError as exc:
+        log("health", type(exc).__name__)
+
+
+def request_stop(signum, frame):
+    global STOP
+    STOP = True
+
 
 def run():
+    global STOP
     if not TOKEN: sys.exit("DOGS_TELEGRAM_BOT_TOKEN not set")
     lock = open(LOCK, "a+")
-    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError: sys.exit(3)  # another instance is running; run.sh stops on 3
-    lock.truncate(0); lock.write(str(os.getpid())); lock.flush()
-    db = connect()
-    kv(db, "bot", api("getMe")["username"])
-    log("polling")
-    poll(db, 0)  # handle taps queued while down (e.g. Done) before tick() can send late alerts
-    while True:
-        try: tick(db, now()); refresh_weeks(db)
-        except Exception as e: log("tick", repr(e))
-        poll(db, 25)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        sys.exit(3)
+    if OWNER_ID <= 0:
+        lock.close()
+        log("OWNER_ID must be a positive Telegram user ID")
+        sys.exit(2)
+    os.umask(0o077)
+    lock.seek(0); lock.truncate(0); lock.write(str(os.getpid())); lock.flush()
+    db, previous = None, {}
+    STOP = False
+    HEALTH_STATE.clear()
+    HEALTH_STATE.update(pid=os.getpid(), started_at=time.time(), last_poll=0, last_tick=0,
+                        last_error="Starting", stopped=False)
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous[sig] = signal.signal(sig, request_stop)
+        db = connect()
+        write_health(True)
+        while not STOP:
+            try:
+                kv(db, "bot", api("getMe")["username"])
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.fp is not None: exc.close()
+                if exc.code in (401, 404):
+                    log("Telegram rejected the bot token; check .env")
+                    sys.exit(2)
+                log("startup", exc.code)
+                HEALTH_STATE["last_error"] = "Telegram unavailable at startup"
+            except Exception as exc:
+                log("startup", type(exc).__name__)
+                HEALTH_STATE["last_error"] = "Telegram unavailable at startup"
+            write_health()
+            time.sleep(5)
+        if STOP: return
+        log("polling")
+        # Drain queued taps before creating reminders or overdue alerts.
+        ready = False
+        while not STOP and not ready:
+            result = poll(db, 0)
+            ready = result is not None and result < 100
+        while not STOP:
+            try:
+                tick(db, now()); refresh_weeks(db)
+                HEALTH_STATE["last_tick"] = time.time()
+                HEALTH_STATE["last_error"] = ""
+            except Exception as exc:
+                log("tick", type(exc).__name__)
+                HEALTH_STATE["last_error"] = "Schedule update failed"
+            result = poll(db, 25)
+            while result == 100 and not STOP: result = poll(db, 0)
+            write_health()
+    finally:
+        HEALTH_STATE["stopped"] = True
+        write_health(True)
+        if db is not None: db.close()
+        lock.close()
+        for sig, handler in previous.items(): signal.signal(sig, handler)
+
 
 def poll(db, timeout):
     offset = int(kv(db, "offset") or 0)
     try:
-        ups = api("getUpdates", offset=offset, timeout=timeout, allowed_updates=["message", "callback_query"])
-    except Exception as e:
-        log("poll", e); time.sleep(5); return
-    for up in ups:
-        kv(db, "offset", str(up["update_id"] + 1))
+        updates = api("getUpdates", offset=offset, timeout=timeout, allowed_updates=["message", "callback_query"])
+        HEALTH_STATE["last_poll"] = time.time()
+    except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError) and exc.fp is not None: exc.close()
+        log("poll", type(exc).__name__)
+        HEALTH_STATE["last_error"] = "Telegram connection unavailable"
+        write_health()
+        time.sleep(5)
+        return None
+    for update in updates:
+        failure_key = f"failed_update_{update['update_id']}"
         try:
-            if "callback_query" in up: on_button(db, up["callback_query"])
-            elif "message" in up: on_text(db, up["message"])
-        except Exception as e:
-            log("handler", repr(e))
+            if "callback_query" in update: on_button(db, update["callback_query"])
+            elif "message" in update: on_text(db, update["message"])
+        except Exception as exc:
+            db.rollback()
+            attempts = int(kv(db, failure_key) or 0) + 1
+            kv(db, failure_key, str(attempts))
+            log("handler", update["update_id"], type(exc).__name__)
+            HEALTH_STATE["last_error"] = "A user action needs retrying"
+            if attempts < 3:
+                time.sleep(1)
+                return None  # keep offset on the failed update
+            source = update.get("callback_query") or update.get("message") or {}
+            uid = source.get("from", {}).get("id")
+            if uid and role_of(db, uid):
+                queue_notice(db, uid, tr(lang_of(db, uid), "error"), event=f"failed:{update['update_id']}")
+        # A successful handler is acknowledged only after its state is saved.
+        kv(db, "offset", str(update["update_id"] + 1))
+        db.execute("DELETE FROM kv WHERE k=?", (failure_key,)); db.commit()
         try: refresh_weeks(db)
-        except Exception as e: log("refresh", repr(e))
+        except Exception as exc: log("refresh", type(exc).__name__)
+    return len(updates)
 
 if __name__ == "__main__":
     setup() if sys.argv[1:] == ["setup"] else run()

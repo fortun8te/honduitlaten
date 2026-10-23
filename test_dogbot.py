@@ -66,10 +66,10 @@ class Rotation(Base):
     def test_off_days(self):
         self.off(2, D(16))
         self.assertEqual(self.plan(3), [1, 1, 2])
-    def test_both_off_fewer_walks(self):
+    def test_both_off_never_assigns_unavailable_walkers(self):
         self.night(D(12), 2); self.night(D(13), 2); self.night(D(14), 1)
         self.off(1, T); self.off(2, T)
-        self.assertEqual(b.pick(self.db, T), 1)
+        self.assertIsNone(b.pick(self.db, T))
     def test_nobody_night_skipped(self):
         self.night(D(14), 1); self.night(T, None, "nobody")
         self.assertEqual(b.week(self.db, T)[1][1], 2)
@@ -106,20 +106,26 @@ class Round4(Base):
         r = b.parse_days("not 28-3 jan", T)
         self.assertEqual((r[0], r[-1], len(r)), (date(2026, 12, 28), date(2027, 1, 3), 7))
     def test_long_unclear_is_huh(self):
-        self.text(1, "20-30 oct")
-        self.assertEqual(self.sent[-1][1], 'didn\'t get that, try "not fri"')
+        self.text(1, "20-28 oct")
+        self.assertEqual(self.sent[-1][1], b.tr("en", "huh"))
+    def test_range_crossing_planning_horizon_is_not_partially_saved(self):
+        self.text(1, "away 10-16 nov")
+        self.assertEqual(self.sent[-1][1], b.tr("en", "too_far"))
+        self.assertEqual(b.all_pending(self.db), [])
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM off").fetchone()[0], 0)
     def test_preview_months_when_spanning(self):
         b.now = lambda: self.at(date(2026, 10, 25), 12)
         self.text(1, "not 31 oct - 1 nov")
         self.assertEqual(self.sent[-1][1], "off: Sat 31 Oct, Sun 1 Nov")
-    def test_two_weeks_max(self):
-        self.text(1, "away 30 oct")
-        self.assertEqual(self.sent[-1][1], "max 2 weeks ahead")
-        self.tap(1, "noff:2026-10-29:1")
-        self.assertEqual((self.answers[-1], b.is_off(self.db, 1, D(29))), ("that one's old", False))
+    def test_month_planning_limit(self):
+        self.text(1, "away 15 nov")
+        self.assertEqual(self.sent[-1][1], b.tr("en", "too_far"))
+        self.tap(1, "noff:2026-11-15:4")
+        self.assertEqual((self.answers[-1], b.is_off(self.db, 1, date(2026, 11, 15))), (b.tr("en", "old"), False))
     def test_lock_single_instance(self):
         import fcntl, tempfile
-        path = tempfile.mktemp()
+        folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        path = folder.name + "/run.lock"
         self.addCleanup(setattr, b, "LOCK", b.LOCK); self.addCleanup(setattr, b, "TOKEN", b.TOKEN)
         b.LOCK, b.TOKEN = path, "x"
         held = open(path, "a+"); fcntl.flock(held, fcntl.LOCK_EX)
@@ -139,7 +145,9 @@ class Dishes(Base):
     def test_both_off_note(self):
         self.off(1, T); self.off(2, T)
         b.tick(self.db, self.at(T, 18, 30))
-        self.assertEqual(self.sent[-1][1], "🍽 dishes are yours tonight\nyou're both off, so dishes are yours")
+        self.assertEqual(self.sent[-1], (3, b.tr("en", "nobody_parents_dishes")))
+        self.assertEqual(b.night(self.db, T, "dishes")["status"], "nobody")
+        self.assertIsNone(b.night(self.db, T, "dishes")["walker"])
     def dish_night(self, w=2, msg=5):
         self.db.execute("INSERT INTO nights(day, chore, walker, status, msg) VALUES(?,?,?,?,?)",
                         (T.isoformat(), "dishes", w, "on", msg))
@@ -171,13 +179,15 @@ class Dishes(Base):
         self.assertEqual((b.owner(self.db, D(16), T), b.dishes(self.db, D(16), 1)), (1, 2))
     def test_migration(self):
         import sqlite3, tempfile
-        path = tempfile.mktemp()
+        folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        path = folder.name + "/old.db"
         old = sqlite3.connect(path)
         old.executescript("CREATE TABLE nights(day TEXT PRIMARY KEY, walker INTEGER, status TEXT, cant TEXT DEFAULT '', "
                           "msg INTEGER, done_at TEXT); INSERT INTO nights(day, walker, status) VALUES('2026-10-01', 1, 'done');"
                           "CREATE TABLE overrides(day TEXT PRIMARY KEY, walker INTEGER); INSERT INTO overrides VALUES('2026-10-20', 2);")
         old.commit(); old.close()
         db = b.connect(path)
+        self.addCleanup(db.close)
         self.assertEqual(tuple(db.execute("SELECT chore, walker FROM nights").fetchone()), ("dogs", 1))
         self.assertEqual(tuple(db.execute("SELECT chore, walker FROM overrides").fetchone()), ("dogs", 2))
         db.close()
@@ -199,8 +209,8 @@ class Round8(Base):
         self.assertEqual(self.sent, [])
     def test_malformed_callback(self):
         for data in ("wk:garbage", "wp:x", "pcover:dogs:notadate"):
-            self.tap(1, data)
-            self.assertEqual(self.answers[-1], "that one's old")
+            self.tap(3 if data.startswith("pcover") else 1, data)
+            self.assertEqual(self.answers[-1], b.tr("en", "old"))
     def test_invite_note(self):
         self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
         b.OWNER_ID = 1; b.kv(self.db, "bot", "u")
@@ -216,7 +226,7 @@ class Round8(Base):
         b.send = send
         for seed in range(300):
             rng, db = random.Random(seed), self.db
-            for table in ("nights", "overrides", "off", "kv"): db.execute(f"DELETE FROM {table}")
+            for table in ("nights", "overrides", "off", "kv", "outbox"): db.execute(f"DELETE FROM {table}")
             clock = [datetime(2026, 10, 20, 18, tzinfo=b.TZ)]
             b.now = lambda: clock[0]
             for step in range(30):
@@ -245,10 +255,14 @@ class Round8(Base):
                         n = b.night(db, day, chore)
                         live = not n or (n["status"] == "on" and b.can_pass(day, t, chore) and not n["cant"])
                         own[chore] = (n["walker"] if n else planned, live)
-                        if live: self.assertIn(own[chore][0], (1, 2), (seed, step, day, chore))
+                        if live:
+                            if all(b.is_off(db, w, day) for w in (1, 2)):
+                                self.assertIsNone(own[chore][0], (seed, step, day, chore, "both unavailable"))
+                            else:
+                                self.assertIn(own[chore][0], (1, 2), (seed, step, day, chore))
                     offs = [w for w in (1, 2) if b.is_off(db, w, day)]
                     (dw, dl), (sw, sl) = own["dogs"], own["dishes"]
-                    if dl and sl and dw == sw and len(offs) != 2:
+                    if dl and sl and dw is not None and dw == sw and len(offs) != 2:
                         self.assertEqual(len(offs), 1, (seed, step, day, "same person, nobody off"))
                         self.assertNotIn(dw, offs, (seed, step, day, "off walker holds both"))
                     if len(offs) == 1:
@@ -270,20 +284,25 @@ class Round7(Base):
         self.assertEqual(self.sent[-1], (9, "already 2 parents"))
     def test_unknown_commands(self):
         self.text(2, "/invite"); self.text(2, "/foo"); self.text(3, "/bar")
-        self.assertEqual([x[1] for x in self.sent], ["/week · /lang"] * 3)
+        self.assertEqual([x[1] for x in self.sent], [b.tr("en", "commands")] * 3)
     def test_walker_welcome(self):
         db = b.connect(":memory:")
+        self.addCleanup(db.close)
         self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
         b.OWNER_ID = 5
         b.on_start(db, {"id": 5, "first_name": "M"}, "")
-        self.assertIn("dishes 18:30, dogs 21:45,", self.sent[-1][1])
-        self.assertLessEqual(self.sent[-1][1].count("\n"), 5)
+        self.assertEqual(self.sent[0], (5, b.tr("en", "hi_walker", name="M")))
+        self.assertIn("18:30", self.sent[-1][1])
+        self.assertIn("21:45", self.sent[-1][1])
+        self.assertIn(b.tr("en", "solo"), self.sent[-1][1])
 
 class Round6(Base):
-    def test_both_off_note_not_on_pass(self):
+    def test_pass_respects_other_walkers_unavailability(self):
         self.off(1, T); self.off(2, T); self.night(T, 1, "on", 1)
         self.tap(1, "cant")
-        self.assertEqual(self.sent[-1], (2, "🐕 Michael can't, dogs are yours"))
+        self.assertEqual(self.sent[-1], (3, b.tr("en", "nobody_parents")))
+        self.assertEqual(b.night(self.db, T)["status"], "nobody")
+        self.assertIsNone(b.night(self.db, T)["walker"])
     def test_old_done_callback_is_dogs(self):
         self.night(T, 1, "on", 1)
         self.tap(1, "done")
@@ -293,13 +312,15 @@ class Round5(Base):
     def test_run_drains_before_tick(self):
         import tempfile
         order = []
-        for k in ("tick", "connect", "LOCK", "TOKEN"): self.addCleanup(setattr, b, k, getattr(b, k))
+        for k in ("tick", "connect", "LOCK", "TOKEN", "OWNER_ID", "HEALTH", "STOP"): self.addCleanup(setattr, b, k, getattr(b, k))
         def api(method, **p):
             if method == "getMe": return {"username": "u"}
             order.append(("poll", p.get("timeout")))
             if len(order) > 2: raise SystemExit
             return []
-        b.api, b.connect, b.LOCK, b.TOKEN = api, lambda: self.db, tempfile.mktemp(), "x"
+        folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        b.api, b.connect, b.LOCK, b.TOKEN = api, lambda: self.db, folder.name + "/run.lock", "x"
+        b.HEALTH, b.OWNER_ID = folder.name + "/health.json", 1
         b.tick = lambda db, t: order.append(("tick", None))
         with self.assertRaises(SystemExit): b.run()
         self.assertEqual(order[:3], [("poll", 0), ("tick", None), ("poll", 25)])
@@ -329,27 +350,36 @@ class Round5(Base):
 class Week(Base):
     def test_view(self):
         text, kb = b.week_view(self.db, T, uid=1)
-        self.assertEqual(text.split("\n")[:4], ["<b>week 15–21 oct</b>", "", "<b>thu 15  you</b>", "fri 16  Christian"])
-        self.assertEqual(b.week_view(self.db, T, "nl", page=1)[0].split("\n")[0], "<b>week 22–28 okt</b>")
+        self.assertIn(b.fmt(T), text)
+        self.assertIn(b.fmt(D(21)), text)
+        self.assertIn("Christian", text)
+        nl = b.week_view(self.db, T, "nl", page=1)[0]
+        self.assertIn(b.fmt(D(22), "nl"), nl)
+        self.assertIn(b.fmt(D(28), "nl"), nl)
         k = kb["inline_keyboard"]
-        self.assertEqual(([len(r) for r in k], k[0][1]), ([4, 3, 1], {"text": "fri 16", "callback_data": "wk:2026-10-16:0"}))
+        self.assertEqual(([len(r) for r in k[:3]], k[0][1]), ([4, 3, 1], {"text": b.fmt(D(16)), "callback_data": "wk:2026-10-16:0"}))
         self.assertEqual(k[2][0]["callback_data"], "wp:1")
+        self.assertEqual(k[3:], b.menu_markup(self.db, 1)["inline_keyboard"])
         self.assertEqual(b.week_view(self.db, T, page=1)[1]["inline_keyboard"][2][0]["callback_data"], "wp:0")
     def test_marks(self):
         self.off(2, D(16))
         self.tap(1, "nswap:2026-10-17:0")
-        lines = b.week_view(self.db, T, "nl", uid=2)[0].split("\n")[2:5]
-        self.assertEqual(lines, ["<b>do 15  Michael</b>", "vr 16  Michael 🚫", "za 17  ⇄ jij"])
+        friday = "\n".join(b.day_details(self.db, 2, D(16), b.owner(self.db, D(16), T), "nl"))
+        saturday = "\n".join(b.day_details(self.db, 2, D(17), b.owner(self.db, D(17), T), "nl"))
+        self.assertIn(b.tr("nl", "off_status", names="Christian"), friday)
+        self.assertIn("Michael", friday)
+        self.assertIn(b.tr("nl", "pending_status"), saturday)
     def test_one_walker(self):
         self.db.execute("DELETE FROM members WHERE id=2")
-        self.assertEqual(b.week_view(self.db, T, uid=1)[0].split("\n")[1], "<i>other walker's not in yet, you've got both</i>")
+        self.assertIn(b.tr("en", "solo"), b.week_view(self.db, T, uid=1)[0])
     def test_week_message_tracked_and_refreshed(self):
         self.text(1, "/week")
         m = 100 + len(self.sent)
         b.confirm_off(self.db, 1, [D(17)])
         b.refresh_weeks(self.db)
         self.assertEqual(self.edits[-1][:2], (1, m))
-        self.assertIn("🚫", self.edits[-1][2])
+        self.assertIn("Michael", self.edits[-1][2])
+        self.assertEqual(self.edits[-1][2], b.week_view(self.db, T, uid=1)[0])
         n = len(self.edits); b.refresh_weeks(self.db)
         self.assertEqual(len(self.edits), n)  # unchanged: no edit
         b.edit = lambda *a, **k: False  # user deleted it
@@ -357,9 +387,9 @@ class Week(Base):
         self.assertIsNone(self.db.execute("SELECT * FROM weekmsg").fetchone())
     def test_paging(self):
         self.tap(1, "wp:1")
-        self.assertTrue(self.edits[-1][2].startswith("<b>week 22–28 oct</b>"))
+        self.assertEqual(self.edits[-1][2], b.week_view(self.db, T, page=1, uid=1)[0])
         self.tap(1, "wp:9")
-        self.assertTrue(self.edits[-1][2].startswith("<b>week 22–28 oct</b>"))
+        self.assertEqual(self.edits[-1][2], b.week_view(self.db, T, page=4, uid=1)[0])
     def test_nobody_night_taken_directly(self):
         self.night(T, None, "nobody")
         self.tap(1, "ntake:2026-10-15:0")
@@ -381,14 +411,14 @@ class Week(Base):
         self.assertEqual(b.all_pending(self.db), [])
     def test_swap_accepted(self):
         self.tap(1, "nswap:2026-10-16:0")  # Christian's Fri, Michael wants it
-        self.assertEqual((self.answers[-1], self.sent[-1]), ("asked Christian", (2, "Michael wants your Fri 16")))
+        self.assertEqual((self.answers[-1], self.sent[-1]), ("asked Christian", (2, b.tr("en", "ask_give", name="Michael", day="Fri 16"))))
         self.assertEqual(self.plan(2)[1], 2)  # nothing changes until accepted
         self.tap(2, "accept", msg=100 + len(self.sent))
         self.assertEqual(self.plan(), [1, 1, 2, 1, 2, 1, 2])
         self.assertIn((1, "👍 Christian said yes, Fri 16 goes to Michael"), self.sent)
     def test_swap_declined(self):
         self.tap(1, "nswap:2026-10-15:0")
-        self.assertEqual(self.sent[-1], (2, "Michael asks: can you take Thu 15?"))
+        self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_take", name="Michael", day="Thu 15")))
         self.tap(2, "no", msg=100 + len(self.sent))
         self.assertEqual((self.plan(1), self.sent[-1]), ([1], (1, "Christian said no to Thu 15")))
     def test_swap_moves_live_message(self):
@@ -477,23 +507,30 @@ class Night(Base):
         n = b.night(self.db, T)
         self.assertEqual((self.answers, n["walker"], n["status"], n["cant"]), (["couldn't reach Christian, try again"], 1, "on", ""))
     def test_tick_errors_dont_crash(self):
-        b.TOKEN, calls = "x", []
-        self.addCleanup(setattr, b, "TOKEN", "")
+        calls = []
+        self.addCleanup(setattr, b, "TOKEN", b.TOKEN)
+        b.TOKEN = "x"
         def boom(db, t): raise RuntimeError("x")
         def api(method, **p):
             calls.append(method)
             if method == "getMe": return {"username": "u"}
             if len(calls) > 3: raise SystemExit
             return []
-        for k in ("tick", "connect", "LOCK"): self.addCleanup(setattr, b, k, getattr(b, k))
-        import tempfile; b.LOCK = tempfile.mktemp()
+        for k in ("tick", "connect", "LOCK", "OWNER_ID", "HEALTH", "STOP"): self.addCleanup(setattr, b, k, getattr(b, k))
+        import tempfile
+        folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        b.LOCK, b.HEALTH, b.OWNER_ID = folder.name + "/run.lock", folder.name + "/health.json", 1
         b.tick, b.api, b.connect = boom, api, lambda: self.db
         with self.assertRaises(SystemExit): b.run()
         self.assertGreater(calls.count("getUpdates"), 1)
     def test_missed_yesterday_once(self):
         self.db.execute("UPDATE members SET joined=joined-86400*3")
         b.tick(self.db, self.at(T, 10)); b.tick(self.db, self.at(T, 11))
-        self.assertEqual(self.sent.count((3, "bot was down last night, nothing went out")), 1)
+        notices = [text for uid, text in self.sent if uid == 3]
+        self.assertEqual(len(notices), 2)
+        for chore in b.CHORES:
+            self.assertEqual(sum(b.tr("en", chore + "_label") in text for text in notices), 1)
+            self.assertEqual(b.night(self.db, D(14), chore)["status"], "missed")
     def test_overdue_once(self):
         self.night(T, 1, "on", 1)
         self.assertIsNone(b.overdue(self.db, self.at(T, 22, 30)))
@@ -520,7 +557,7 @@ class Chat(Base):
         self.text(1, "he does the weekend")
         self.assertEqual(self.sent[-1][1], "Christian walks: Sat 17, Sun 18")
         self.tap(1, "confirm", msg=self.last())
-        self.assertEqual(self.sent[-1], (2, "Michael asks: can you take Sat 17?"))  # Sun skipped, he's off
+        self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_take", name="Michael", day="Sat 17")))  # Sun skipped, he's off
         self.assertEqual(self.plan(3)[2], 1)  # nothing until he accepts
         self.tap(2, "accept", msg=self.last())
         self.assertEqual(self.plan(3)[2], 2)
@@ -561,6 +598,7 @@ class Chat(Base):
         self.assertNotIn((3, "Dad joined"), self.sent)  # parents don't hear about parents
     def test_only_owner_starts(self):
         db = b.connect(":memory:")
+        self.addCleanup(db.close)
         self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
         b.OWNER_ID = 42
         b.on_start(db, {"id": 9, "first_name": "X"}, "")
@@ -583,12 +621,14 @@ class Language(Base):
     def test_toggle_and_dutch(self):
         self.text(2, "/lang")
         self.tap(2, "lang:nl")
-        self.assertEqual(self.edits[-1][2], "Taal")
+        self.assertEqual(b.lang_of(self.db, 2), "nl")
+        self.assertIn(b.tr("nl", "today", day=b.fmt(T, "nl")), self.edits[-1][2])
         self.text(2, "kan niet vrijdag")  # parser stays bilingual
         self.assertEqual(self.sent[-1], (2, "kan niet: Vr 16"))
     def test_bad_lang_falls_back(self):
         self.tap(2, "lang:xx")
-        self.assertEqual((b.lang_of(self.db, 2), self.edits[-1][2]), ("en", "Language"))
+        self.assertEqual(b.lang_of(self.db, 2), "en")
+        self.assertIn(b.tr("en", "today", day=b.fmt(T)), self.edits[-1][2])
     def test_both_off_note_needs_two_walkers(self):
         self.db.execute("DELETE FROM members WHERE id=2"); self.off(1, T)
         b.say_on(self.db, 1, T.isoformat(), "dogs")
@@ -598,8 +638,8 @@ class Language(Base):
         b.edit = lambda chat, msg, text, markup=None, **k: (self.edits.append((chat, msg, text)), marks.append(markup))
         self.tap(1, "wk:2026-10-16:0")  # Michael's night: off / swap / back
         kb = marks[-1]["inline_keyboard"]
-        self.assertEqual([[x["callback_data"] for x in r] for r in kb], [["noff:2026-10-16:0", "nswap:2026-10-16:0"], ["wp:0"]])
-        self.assertEqual([x["style"] for x in kb[0]], ["danger", "primary"])
+        self.assertEqual([[x["callback_data"] for x in r] for r in kb[:2]], [["noff:2026-10-16:0", "nswap:2026-10-16:0"], ["wp:0"]])
+        self.assertEqual(kb[2:], b.menu_markup(self.db, 1)["inline_keyboard"])
         self.tap(1, "noff:2026-10-16:0")
         self.assertEqual((self.answers[-1], b.is_off(self.db, 1, D(16)), self.edits[-1][2]), ("👍 saved", True, b.week_view(self.db, T, uid=1)[0]))
         self.tap(1, "wk:2026-10-16:0")
@@ -613,7 +653,7 @@ class Language(Base):
     def test_plan_button(self):
         self.assertEqual(len(b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"]), 1)  # reminders: done/can't only
         self.tap(1, "plan")
-        self.assertTrue(self.sent[-1][1].startswith("<b>week 15–21 oct</b>"))
+        self.assertEqual(self.sent[-1][1], b.week_view(self.db, T, uid=1)[0])
         self.assertTrue(all(len(x["callback_data"].encode()) <= 64 for r in b.week_view(self.db, T)[1]["inline_keyboard"] for x in r))
     def test_word_date_range(self):
         for s in ("away 20 to 27 oct", "away 20-27 oct", "weg 20 t/m 27 okt"):

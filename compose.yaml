@@ -1,0 +1,30 @@
+name: honduitlaten
+services:
+  bot:
+    build: .
+    image: honduitlaten:local
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DOGBOT_DB: /data/dogbot.db
+      DOGBOT_LOCK: /data/dogbot.db.lock
+      DOGBOT_HEALTH: /data/dogbot.db.health.json
+    volumes:
+      - bot-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: '5m'
+        max-file: '3'
+volumes:
+  bot-data:
