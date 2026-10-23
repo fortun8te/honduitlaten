@@ -178,6 +178,17 @@ TABLES = {
 def connect(path=DB):
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
+    # The buttons-only release uses a different rota and a signed debt ledger.
+    # Its data cannot safely be treated as an empty instance of this schema.
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if {"tasks", "points"}.issubset(tables):
+        task_columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
+        point_columns = {row[1] for row in db.execute("PRAGMA table_info(points)")}
+        if {"day", "chore", "who", "payback", "done_at", "missed"}.issubset(task_columns) and \
+                {"day", "chore", "uid", "n"}.issubset(point_columns):
+            db.close()
+            raise ValueError("This is a button-only-rota database. Migration is required before this version can use it. "
+                             "No data was changed. Keep the original database and bot until migration is reviewed.")
     db.execute("PRAGMA busy_timeout=5000")
     db.executescript("""
     CREATE TABLE IF NOT EXISTS members(id INTEGER PRIMARY KEY, name TEXT, role TEXT, joined INTEGER, lang TEXT DEFAULT 'en');

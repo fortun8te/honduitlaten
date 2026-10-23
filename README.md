@@ -88,6 +88,8 @@ To watch logs continuously: `sudo journalctl -u honduitlaten.service -f`. To dis
 
 ## Backup, restore and updates
 
+**Existing button-only version:** the `button-only-rota` branch stores chores and points in different tables (`tasks`, `points`, `cards`). Do not replace that live version with this one until its current database has been backed up and explicitly migrated. This version refuses that database before modifying its schema; an ordinary source update is not a migration. Keep the old bot running until a migration has been checked against its actual data.
+
 Backups contain family names, Telegram IDs and planning data. Keep them private and copy important backups off the SD card. Backup files are created with private permissions and an existing backup is never overwritten. SQLite's backup API includes committed changes that may still be in a WAL file. The finished backup replaces a temporary file atomically.
 
 Before updating source files:
