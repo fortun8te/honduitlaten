@@ -29,11 +29,24 @@ class Workflows(Base):
         self.assertIn('Mum ✓', week)
 
     def test_repeated_swap_tap_sends_one_request(self):
+        before = self.schedule_snapshot()
         self.tap(1, 'nswap:2026-10-16:0')
         first = list(self.sent)
+        self.assertTrue(all(uid == 1 for uid, _ in first), 'Review is private')
         self.tap(1, 'nswap:2026-10-16:0')
         self.assertEqual(self.sent, first)
-        self.assertEqual(len(b.all_pending(self.db)), 1)
+        preview = 100 + len(self.sent)
+        self.assertEqual(self.schedule_snapshot(), before)
+        self.tap(1, 'request_confirm', preview)
+        sent_once = list(self.sent)
+        self.tap(1, 'request_confirm', preview)
+        self.assertEqual(self.sent, sent_once)
+        self.assertEqual(sum(uid == 2 for uid, _ in self.sent), 1)
+        self.assertEqual(self.schedule_snapshot(), before)
+        requests = [(key, p) for key, p in b.all_pending(self.db) if p['type'] == 'swap']
+        self.assertEqual(len(requests), 1)
+        self.tap(2, 'accept', int(requests[0][0].rsplit('_', 1)[1]))
+        self.assertEqual(b.owner(self.db, date(2026, 10, 16), T), 1)
 
     def test_finish_early_prevents_later_reminder(self):
         b.now = lambda: self.at(T, 17)
@@ -73,7 +86,7 @@ class Workflows(Base):
         self.text(1, 'not tonight')
         msg = 100 + len(self.sent)
         b.now = lambda: self.at(T, 23, 10)
-        self.tap(1, 'confirm', msg)
+        self.tap(1, 'av:confirm', msg)
         self.assertFalse(b.is_off(self.db, 1, T))
 
     def test_leap_date_and_dutch_short_range(self):

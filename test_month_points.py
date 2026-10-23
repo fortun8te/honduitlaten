@@ -73,13 +73,16 @@ class MonthAndPoints(unittest.TestCase):
         self.text('not 7 nov')
         pending = b.all_pending(self.db)
         self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0][1]['off'], ['2026-11-07'])
-        self.tap(1, 'confirm', 101)
+        self.assertEqual(pending[0][1]['selected'], ['2026-11-07'])
+        self.assertFalse(b.is_off(self.db, 1, date(2026, 11, 7)))
+        self.tap(1, 'av:confirm', 101)
         self.assertTrue(b.is_off(self.db, 1, date(2026, 11, 7)))
 
     def test_last_day_allowed_but_next_day_callback_rejected(self):
         allowed, denied = self.day + timedelta(days=30), self.day + timedelta(days=31)
         self.tap(1, f'noff:{allowed}:4')
+        self.assertFalse(b.is_off(self.db, 1, allowed))
+        self.tap(1, 'av:confirm', 100 + len(self.sent))
         self.assertTrue(b.is_off(self.db, 1, allowed))
         self.tap(1, f'noff:{denied}:4')
         self.assertFalse(b.is_off(self.db, 1, denied))

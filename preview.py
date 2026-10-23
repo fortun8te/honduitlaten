@@ -69,8 +69,6 @@ class Demo:
         self.db.commit()
         bot.kv(self.db,'bot','offline_preview')
         for uid in PERSONAS:
-            text = bot.tr('nl','hi_parent') if uid == 3 else bot.tr('nl','hi_walker',name=PERSONAS[uid])
-            self.send(uid,text,bot.menu_markup(self.db,uid))
             bot.open_home(self.db,uid)
         _, days, hour, minute = CLOCKS[clock]
         target = BASE + timedelta(days=days,hours=hour,minutes=minute)
@@ -99,6 +97,12 @@ class Demo:
     def api(self, method, **params):
         if method == 'answerCallbackQuery': self.notice = params.get('text',''); return True
         if method == 'getMe': return {'username':'offline_preview'}
+        if method == 'editMessageReplyMarkup':
+            for message in self.messages.get(params['chat_id'], []):
+                if message['id'] == params['message_id']:
+                    message['markup'] = params.get('reply_markup') or {}
+                    return True
+            return False
         if method == 'deleteMessage':
             self.messages[params['chat_id']] = [m for m in self.messages[params['chat_id']] if m['id'] != params['message_id']]
             return True

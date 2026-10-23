@@ -34,7 +34,8 @@ class FamilyUX(unittest.TestCase):
         self.assertIn('Michael', text)
         self.assertIn(b.tr('nl','pending_status'), text)
         self.assertIn('home', actions(kb))
-        self.assertIn('help', actions(kb))
+        self.assertIn('more', actions(kb))
+        self.assertIn('help', actions(b.more_view(self.db,1)[1]))
 
     def test_week_is_compact_and_settled_day_has_no_edit_controls(self):
         text, _ = b.week_view(self.db, DAY, 'nl', uid=1)

@@ -55,6 +55,25 @@ class Base(unittest.TestCase):
                               "message": {"chat": {"id": uid}, "message_id": msg}})
     def text(self, uid, text):
         b.on_text(self.db, {"from": {"id": uid}, "chat": {"type": "private"}, "text": text})
+    def schedule_snapshot(self):
+        return {table: [tuple(row) for row in self.db.execute(f"SELECT * FROM {table} ORDER BY 1,2")]
+                for table in ("off", "overrides", "nights")}
+    def request_swap(self, uid, day):
+        """Explicit initiator review/confirm; deliberately does not accept for the recipient."""
+        before, sent_before = self.schedule_snapshot(), len(self.sent)
+        self.tap(uid, f"nswap:{day}:0")
+        self.assertEqual(self.schedule_snapshot(), before)
+        self.assertTrue(all(chat == uid for chat, _ in self.sent[sent_before:]))
+        previews = [(key, data) for key, data in b.all_pending(self.db)
+                    if key.startswith(f"p_{uid}_") and data.get("type") == "request_preview" and data["day"] == str(day)]
+        self.assertTrue(previews, "Initiator must see a private request preview")
+        self.tap(uid, "request_confirm", int(previews[-1][0].rsplit("_", 1)[1]))
+        self.assertEqual(self.schedule_snapshot(), before, "Sending a request must not change the plan")
+        requests = [(key, data) for key, data in b.all_pending(self.db)
+                    if data.get("type") == "swap" and data["from"] == uid and str(day) in data["owners"]]
+        self.assertTrue(requests)
+        key = requests[-1][0].split("_")
+        return int(key[1]), int(key[2])
     def dogs(self): return [x for x in self.sent if "🐕" in x[1]]
     def at(self, d, h, m=0): return datetime(d.year, d.month, d.day, h, m, tzinfo=b.TZ)
 
@@ -86,9 +105,13 @@ class Round4(Base):
         self.tap(1, "done")
         self.assertEqual(b.night(self.db, T)["status"], "done")
     def test_ask_network_error_says_retry(self):
-        b.send = lambda chat, text, markup=None: None
         self.tap(1, "nswap:2026-10-16:0")
+        msg = 100 + len(self.sent)
+        b.send = lambda chat, text, markup=None: None
+        self.tap(1, "request_confirm", msg)
         self.assertEqual(self.answers[-1], "couldn't reach Christian, try again")
+        self.assertEqual(b.peek_pending(self.db, 1, msg)["type"], "request_preview")
+        self.assertEqual(self.plan(2)[1], 2)
     def test_429_waits_once(self):
         import io, urllib.error
         slept, calls = [], []
@@ -116,7 +139,8 @@ class Round4(Base):
     def test_preview_months_when_spanning(self):
         b.now = lambda: self.at(date(2026, 10, 25), 12)
         self.text(1, "not 31 oct - 1 nov")
-        self.assertEqual(self.sent[-1][1], "off: Sat 31 Oct, Sun 1 Nov")
+        self.assertIn("Sat 31 Oct, Sun 1 Nov", self.sent[-1][1])
+        self.assertFalse(b.is_off(self.db, 1, date(2026, 10, 31)))
     def test_month_planning_limit(self):
         self.text(1, "away 15 nov")
         self.assertEqual(self.sent[-1][1], b.tr("en", "too_far"))
@@ -170,12 +194,13 @@ class Dishes(Base):
     def test_late_alert_once_with_cover(self):
         self.dish_night()
         b.tick(self.db, self.at(T, 21, 1)); b.tick(self.db, self.at(T, 21, 2))
-        self.assertEqual(self.sent.count((3, "dishes still not done")), 1)
+        self.assertEqual(self.sent.count((3, b.tr("en", "late_dishes"))), 1)
         self.tap(3, "pcover:dishes:" + T.isoformat(), msg=60)
         self.assertEqual(b.night(self.db, T, "dishes")["status"], "parent")
         self.assertIn((1, "Mum's got the dishes tonight"), self.sent)
     def test_swap_trades_both(self):
-        self.tap(1, "nswap:2026-10-16:0"); self.tap(2, "accept", msg=100 + len(self.sent))
+        recipient, request = self.request_swap(1, D(16))
+        self.tap(recipient, "accept", msg=request)
         self.assertEqual((b.owner(self.db, D(16), T), b.dishes(self.db, D(16), 1)), (1, 2))
     def test_migration(self):
         import sqlite3, tempfile
@@ -215,15 +240,32 @@ class Round8(Base):
         self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
         b.OWNER_ID = 1; b.kv(self.db, "bot", "u")
         self.text(1, "/invite")
-        self.assertTrue(self.sent[-1][1].endswith("/invite again makes new links"))
+        self.assertIn(b.tr("en", "family_links"), self.sent[-1][1])
     def test_property_random_sequences(self):
         """300 seeded runs of off/claim/swap/decline/Can't/Done/tick over several days.
         A chore row is history once it's settled or past its Can't cutoff; everything else must hold."""
         import random
         sent = {}
-        def send(chat, text, markup=None):
+        def send(chat, text, markup=None, **kwargs):
             sent[len(sent) + 1000] = (chat, markup); return len(sent) + 999
         b.send = send
+        counts = {key: 0 for key in ("availability", "claim", "request", "accept", "decline")}
+        def owned_pending(uid, kind):
+            return [(int(key.rsplit("_", 1)[1]), proposal) for key, proposal in b.all_pending(self.db)
+                    if key.startswith(f"p_{uid}_") and proposal.get("type") == kind]
+        def reply_to_request(uid, day, accept):
+            matches = [(key, proposal) for key, proposal in b.all_pending(self.db)
+                       if proposal.get("type") == "swap" and proposal["from"] == uid and str(day) in proposal["owners"]]
+            if matches:
+                key, proposal = matches[-1]
+                recipient, message = map(int, key.split("_")[1:])
+                self.assertTrue(b.swap_valid(self.db, proposal, b.now()))
+                self.tap(recipient, "accept" if accept else "no", msg=message)
+                if accept:
+                    for day_text in proposal["owners"]:
+                        self.assertEqual(b.owner(self.db, date.fromisoformat(day_text), b.now().date()), proposal["to"])
+                self.assertIsNone(b.peek_pending(self.db, recipient, message))
+                counts["accept" if accept else "decline"] += 1
         for seed in range(300):
             rng, db = random.Random(seed), self.db
             for table in ("nights", "overrides", "off", "kv", "outbox"): db.execute(f"DELETE FROM {table}")
@@ -233,16 +275,45 @@ class Round8(Base):
                 clock[0] += b.timedelta(minutes=rng.choice((5, 20, 60, 180)))
                 t, u, op = clock[0], rng.choice((1, 2)), rng.choice("ocswxdtie")
                 today = t.date(); d = today + b.timedelta(days=rng.randrange(4))
-                if op == "o": b.confirm_off(db, u, [d])
-                elif op == "c": b.confirm_walk(db, u, [d])
-                elif op in "ie": self.tap(u, ("nin:" if op == "i" else "ntake:") + f"{d}:0")
+                if op in "oi":
+                    before = self.schedule_snapshot()
+                    previous_messages = max(sent, default=0)
+                    if op == "o": self.text(u, f"not {d.day} {b.month(d, 'en')}")
+                    else: self.tap(u, f"nin:{d}:0")
+                    self.assertEqual(self.schedule_snapshot(), before, (seed, step, "availability before confirm"))
+                    reviews = [(message, proposal) for message, proposal in owned_pending(u, "availability")
+                               if message > previous_messages]
+                    if reviews:
+                        message, proposal = reviews[-1]
+                        self.assertEqual(proposal["stage"], "review")
+                        self.assertTrue(all(chat == u for mid, (chat, _) in sent.items() if mid > previous_messages))
+                        self.tap(u, "av:confirm", msg=message)
+                        if b.peek_pending(db, u, message) is None: counts["availability"] += 1
+                elif op == "c":
+                    before = self.schedule_snapshot()
+                    previous_messages = max(sent, default=0)
+                    self.text(u, f"I do {d.day} {b.month(d, 'en')}")
+                    self.assertEqual(self.schedule_snapshot(), before, (seed, step, "claim before confirm"))
+                    reviews = [(message, proposal) for message, proposal in owned_pending(u, "preview")
+                               if message > previous_messages]
+                    if reviews:
+                        self.tap(u, "confirm", msg=reviews[-1][0])
+                        counts["claim"] += 1
+                        reply_to_request(u, d, rng.choice((True, False)))
+                elif op == "e": self.tap(u, f"ntake:{d}:0")
                 elif op in "sw":
-                    before = max(sent, default=0)
-                    b.on_night_action(db, u, "nswap", d, u, 5, lambda *a, **k: None, 0)
-                    asks = [(m, c) for m, (c, mk) in sent.items() if m > before and "accept" in str(mk)]
-                    if asks:
-                        m, c = asks[-1]
-                        self.tap(c, "accept" if op == "s" else "no", msg=m)
+                    before = self.schedule_snapshot()
+                    previous_messages = max(sent, default=0)
+                    self.tap(u, f"nswap:{d}:0")
+                    self.assertEqual(self.schedule_snapshot(), before, (seed, step, "swap before review confirm"))
+                    self.assertTrue(all(chat == u for mid, (chat, _) in sent.items() if mid > previous_messages))
+                    reviews = [(message, proposal) for message, proposal in owned_pending(u, "request_preview")
+                               if proposal["day"] == str(d)]
+                    if reviews:
+                        self.tap(u, "request_confirm", msg=reviews[-1][0])
+                        self.assertEqual(self.schedule_snapshot(), before, (seed, step, "swap before other person's consent"))
+                        counts["request"] += 1
+                        reply_to_request(u, d, op == "s")
                 elif op in "xd":
                     for chore in b.CHORES:
                         n = b.night(db, today, chore)
@@ -268,6 +339,9 @@ class Round8(Base):
                     if len(offs) == 1:
                         for chore, (w, live) in own.items():
                             if live: self.assertNotIn(w, offs, (seed, step, day, chore, "off walker owns"))
+        for operation, count in counts.items():
+            self.assertGreater(count, 100, (operation, "random coverage disappeared", counts))
+
 
 class Round7(Base):
     def test_parent_cap_and_code_rotation(self):
@@ -276,6 +350,11 @@ class Round7(Base):
         b.kv(self.db, "bot", "u")
         self.text(1, "/invite"); old = b.kv(self.db, "code")
         self.text(1, "/invite")
+        self.assertEqual(old, b.kv(self.db, "code"))
+        self.tap(1, "rotate_links")
+        preview = 100 + len(self.sent)
+        self.assertEqual(old, b.kv(self.db, "code"))
+        self.tap(1, "rotate_confirm", msg=preview)
         self.assertNotEqual(old, b.kv(self.db, "code"))
         b.on_start(self.db, {"id": 8, "first_name": "Dad"}, "parent_" + old)
         self.assertEqual(self.sent[-1], (8, "this bot's private"))
@@ -291,7 +370,9 @@ class Round7(Base):
         self.addCleanup(setattr, b, "OWNER_ID", b.OWNER_ID)
         b.OWNER_ID = 5
         b.on_start(db, {"id": 5, "first_name": "M"}, "")
-        self.assertEqual(self.sent[0], (5, b.tr("en", "hi_walker", name="M")))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][0], 5)
+        self.assertIn("Today", self.sent[0][1])
         self.assertIn("18:30", self.sent[-1][1])
         self.assertIn("21:45", self.sent[-1][1])
         self.assertIn(b.tr("en", "solo"), self.sent[-1][1])
@@ -359,11 +440,12 @@ class Week(Base):
         k = kb["inline_keyboard"]
         self.assertEqual(([len(r) for r in k[:3]], k[0][1]), ([4, 3, 1], {"text": b.fmt(D(16)), "callback_data": "wk:2026-10-16:0"}))
         self.assertEqual(k[2][0]["callback_data"], "wp:1")
-        self.assertEqual(k[3:], b.menu_markup(self.db, 1)["inline_keyboard"])
+        self.assertEqual(k[-2:], b.menu_markup(self.db, 1)["inline_keyboard"])
+        self.assertEqual([x["callback_data"] for x in k[3]], ["availability", "requests"])
         self.assertEqual(b.week_view(self.db, T, page=1)[1]["inline_keyboard"][2][0]["callback_data"], "wp:0")
     def test_marks(self):
         self.off(2, D(16))
-        self.tap(1, "nswap:2026-10-17:0")
+        self.request_swap(1, D(17))
         friday = "\n".join(b.day_details(self.db, 2, D(16), b.owner(self.db, D(16), T), "nl"))
         saturday = "\n".join(b.day_details(self.db, 2, D(17), b.owner(self.db, D(17), T), "nl"))
         self.assertIn(b.tr("nl", "off_status", names="Christian"), friday)
@@ -400,30 +482,30 @@ class Week(Base):
         self.tap(1, "nswap:2026-10-15:0")
         self.assertEqual((self.answers[-1], self.sent), ("too late to pass, sort it irl aha", []))
     def test_swap_expires_when_owner_changes(self):
-        self.tap(1, "nswap:2026-10-16:0")
-        m = 100 + len(self.sent)
+        recipient, m = self.request_swap(1, D(16))
         b.apply_claim(self.db, 1, [D(16)])  # Fri changed hands meanwhile
         self.tap(2, "accept", msg=m)
         self.assertEqual(self.answers[-1], "that one's old")
     def test_swap_expires_at_night_start_and_pruned(self):
-        self.tap(2, "nswap:2026-10-15:0")
+        self.request_swap(2, T)
         b.tick(self.db, self.at(T, 23, 1))
         self.assertEqual(b.all_pending(self.db), [])
     def test_swap_accepted(self):
-        self.tap(1, "nswap:2026-10-16:0")  # Christian's Fri, Michael wants it
-        self.assertEqual((self.answers[-1], self.sent[-1]), ("asked Christian", (2, b.tr("en", "ask_give", name="Michael", day="Fri 16"))))
+        recipient, request = self.request_swap(1, D(16))
+        self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_give", name="Michael", day="Fri 16")))
         self.assertEqual(self.plan(2)[1], 2)  # nothing changes until accepted
         self.tap(2, "accept", msg=100 + len(self.sent))
         self.assertEqual(self.plan(), [1, 1, 2, 1, 2, 1, 2])
         self.assertIn((1, "👍 Christian said yes, Fri 16 goes to Michael"), self.sent)
     def test_swap_declined(self):
-        self.tap(1, "nswap:2026-10-15:0")
+        recipient, request = self.request_swap(1, T)
         self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_take", name="Michael", day="Thu 15")))
         self.tap(2, "no", msg=100 + len(self.sent))
         self.assertEqual((self.plan(1), self.sent[-1]), ([1], (1, "Christian said no to Thu 15")))
     def test_swap_moves_live_message(self):
         self.night(T, 1, "on", 7)
-        self.tap(1, "nswap:2026-10-15:0"); self.tap(2, "accept", msg=100 + len(self.sent))
+        recipient, request = self.request_swap(1, T)
+        self.tap(recipient, "accept", msg=request)
         self.assertIn((1, 7, "passed to Christian"), self.edits)
         self.assertEqual(self.sent[-2], (2, "🐕 dogs are yours tonight"))
     def test_old_button(self):
@@ -459,7 +541,7 @@ class Night(Base):
         self.assertEqual(self.dogs(), [(1, "🐕 dogs are yours tonight")])
     def test_down_all_evening(self):
         b.tick(self.db, self.at(T, 23, 5))
-        self.assertEqual(self.sent, [(3, "dogs not done yet"), (3, "dishes still not done")])  # no walker messages
+        self.assertEqual(self.sent, [(3, b.tr("en", "late")), (3, b.tr("en", "late_dishes"))])  # no walker messages
     def test_transient_failure_retries_next_tick(self):
         b.send = lambda chat, text, markup=None: None
         b.tick(self.db, self.at(T, 21, 45))
@@ -469,7 +551,9 @@ class Night(Base):
         self.assertEqual(self.dogs(), [(1, "🐕 dogs are yours tonight")])
     def test_off_tonight_passes_live_message(self):
         self.night(T, 1, "on", 7)
-        self.text(1, "not tonight"); self.tap(1, "confirm", msg=100 + len(self.sent))
+        self.text(1, "not tonight")
+        self.assertEqual(b.night(self.db, T)["walker"], 1)
+        self.tap(1, "av:confirm", msg=100 + len(self.sent))
         self.assertIn((1, 7, "passed to Christian"), self.edits)
         self.assertEqual(b.night(self.db, T)["walker"], 2)
     def test_resend_if_crashed_before_sent(self):
@@ -535,7 +619,7 @@ class Night(Base):
         self.night(T, 1, "on", 1)
         self.assertIsNone(b.overdue(self.db, self.at(T, 22, 30)))
         b.tick(self.db, self.at(T, 23, 1)); b.tick(self.db, self.at(T, 23, 2))
-        self.assertEqual(self.sent.count((3, "dogs not done yet")), 1)
+        self.assertEqual(self.sent.count((3, b.tr("en", "late"))), 1)
     def test_parent_cover(self):
         self.night(T, 1, "on", 7)
         self.tap(3, "pcover:" + T.isoformat(), msg=50)
@@ -548,10 +632,13 @@ class Chat(Base):
     def last(self): return 100 + len(self.sent)
     def test_off_day_preview(self):
         self.text(2, "not fri")
-        self.assertEqual(self.sent[-1], (2, "off: Fri 16"))
+        self.assertEqual(self.sent[-1][0], 2)
+        self.assertIn("Fri 16", self.sent[-1][1])
+        self.assertFalse(b.is_off(self.db, 2, D(16)))
         self.assertEqual(self.plan(2)[1], 2)  # not saved yet
-        self.tap(2, "confirm", msg=self.last())
-        self.assertEqual((self.edits[-1][2], self.plan(2)[1]), ("👍 saved", 1))
+        self.tap(2, "av:confirm", msg=self.last())
+        self.assertTrue(b.is_off(self.db, 2, D(16)))
+        self.assertEqual(self.plan(2)[1], 1)
     def test_claim_confirm(self):
         self.off(2, D(18))
         self.text(1, "he does the weekend")
@@ -568,6 +655,8 @@ class Chat(Base):
         self.tap(1, "walk", msg=m)
         self.assertEqual(self.edits[-1][2], "Michael walks: Fri 16")
         self.tap(1, "confirm", msg=m)
+        self.assertEqual(self.plan(2), [1, 2], "Other walker must still consent")
+        self.tap(2, "accept", msg=self.last())
         self.assertEqual(self.plan(2), [1, 1])
     def test_intent(self):
         i = lambda s: b.intent(s, 1, 2, "Christian")
@@ -593,7 +682,9 @@ class Chat(Base):
     def test_parent_join(self):
         b.kv(self.db, "code", "abc")
         b.on_start(self.db, {"id": 9, "first_name": "Dad"}, "parent_abc")
-        self.assertIn((9, b.tr("en", "hi_parent")), self.sent)
+        own = [text for uid, text in self.sent if uid == 9]
+        self.assertEqual(len(own), 1)
+        self.assertIn("Today", own[0])
         self.assertIn((1, "Dad joined"), self.sent)
         self.assertNotIn((3, "Dad joined"), self.sent)  # parents don't hear about parents
     def test_only_owner_starts(self):
@@ -624,7 +715,9 @@ class Language(Base):
         self.assertEqual(b.lang_of(self.db, 2), "nl")
         self.assertIn(b.tr("nl", "today", day=b.fmt(T, "nl")), self.edits[-1][2])
         self.text(2, "kan niet vrijdag")  # parser stays bilingual
-        self.assertEqual(self.sent[-1], (2, "kan niet: Vr 16"))
+        self.assertEqual(self.sent[-1][0], 2)
+        self.assertIn("Vr 16", self.sent[-1][1])
+        self.assertEqual(b.peek_pending(self.db, 2, 100 + len(self.sent))["mode"], "off")
     def test_bad_lang_falls_back(self):
         self.tap(2, "lang:xx")
         self.assertEqual(b.lang_of(self.db, 2), "en")
@@ -641,10 +734,14 @@ class Language(Base):
         self.assertEqual([[x["callback_data"] for x in r] for r in kb[:2]], [["noff:2026-10-16:0", "nswap:2026-10-16:0"], ["wp:0"]])
         self.assertEqual(kb[2:], b.menu_markup(self.db, 1)["inline_keyboard"])
         self.tap(1, "noff:2026-10-16:0")
-        self.assertEqual((self.answers[-1], b.is_off(self.db, 1, D(16)), self.edits[-1][2]), ("👍 saved", True, b.week_view(self.db, T, uid=1)[0]))
+        self.assertFalse(b.is_off(self.db, 1, D(16)))
+        self.tap(1, "av:confirm", msg=100 + len(self.sent))
+        self.assertTrue(b.is_off(self.db, 1, D(16)))
         self.tap(1, "wk:2026-10-16:0")
         self.assertEqual(marks[-1]["inline_keyboard"][0][0]["callback_data"], "nin:2026-10-16:0")
         self.tap(1, "nin:2026-10-16:0")
+        self.assertTrue(b.is_off(self.db, 1, D(16)))
+        self.tap(1, "av:confirm", msg=100 + len(self.sent))
         self.assertFalse(b.is_off(self.db, 1, D(16)))
     def test_take_needs_empty_night(self):
         d = next(d for d, w in b.week(self.db, T) if w == 2)
@@ -653,7 +750,8 @@ class Language(Base):
     def test_plan_button(self):
         self.assertEqual(len(b.chore_buttons(self.db, 1, "dogs")["inline_keyboard"]), 1)  # reminders: done/can't only
         self.tap(1, "plan")
-        self.assertEqual(self.sent[-1][1], b.week_view(self.db, T, uid=1)[0])
+        self.assertFalse(self.sent)
+        self.assertEqual(self.edits[-1][2], b.week_view(self.db, T, uid=1)[0])
         self.assertTrue(all(len(x["callback_data"].encode()) <= 64 for r in b.week_view(self.db, T)[1]["inline_keyboard"] for x in r))
     def test_word_date_range(self):
         for s in ("away 20 to 27 oct", "away 20-27 oct", "weg 20 t/m 27 okt"):
