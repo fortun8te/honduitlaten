@@ -1,0 +1,6 @@
+# Only application source enters the build context. No tokens, databases or backups.
+**
+!Dockerfile
+!dogbot.py
+!dogbotctl.py
+!run.sh

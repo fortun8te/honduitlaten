@@ -1,4 +1,5 @@
 #!/bin/sh
-# Launches the bot; dogbot.lock makes extra launches exit straight away.
-cd "$(dirname "$0")"
-nohup "$PWD/run.sh" >> bot.log 2>&1 &
+# Compatibility entry point: managed service, no detached shell or growing bot.log.
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$SCRIPT_DIR/run.sh" start
