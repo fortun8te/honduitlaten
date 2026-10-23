@@ -26,7 +26,12 @@ class TodayFocus(unittest.TestCase):
     def actions(self,uid):
         return [x['callback_data'] for r in b.home_view(self.db,uid)[1]['inline_keyboard'] for x in r]
 
-    def focus(self,uid):return b.home_view(self.db,uid)[0].splitlines()[1]
+    def focus(self,uid):
+        # Retained pure helper also decides which unfinished evening takes priority.
+        # Normal Today intentionally omits its redundant focus sentence.
+        waiting=sum(1 for key,p in b.all_pending(self.db) if key.startswith(f'p_{uid}_')
+                    and p.get('type')=='swap' and b.swap_valid(self.db,p,self.clock))
+        return b.home_focus(self.db,uid,self.clock,waiting)[0]
 
     def test_next_task_is_personal_and_both_actual_assignments_remain_visible(self):
         self.assertIn('21:45',self.focus(1))
@@ -77,7 +82,7 @@ class TodayFocus(unittest.TestCase):
         actions=self.actions(1)
         self.assertEqual(actions[0],'done:dogs:2026-10-22')
         self.assertIn('requests',actions)
-        self.assertIn('Ruilverzoeken om te beantwoorden',text)
+        self.assertTrue(any(button['callback_data']=='requests' and '(1)' in button['text'] for row in kb['inline_keyboard'] for button in row))
         self.clock=self.clock.replace(hour=3)
         self.assertNotIn('Do 22',self.focus(1))
         self.assertNotIn('done:dogs:2026-10-22',self.actions(1))
@@ -115,16 +120,19 @@ class TodayFocus(unittest.TestCase):
     def test_setup_shortcut_only_for_owner_until_second_walker_joins(self):
         self.db.execute('DELETE FROM members WHERE id=2')
         self.assertIn('family',self.actions(1))
-        self.assertIn('tweede loper',b.home_view(self.db,1)[0])
+        self.assertTrue(any(button['callback_data']=='family' and button['text'] for row in b.home_view(self.db,1)[1]['inline_keyboard'] for button in row))
         self.assertNotIn('family',self.actions(3))
         self.db.execute("INSERT INTO members(id,name,role,joined) VALUES(2,'Christian','walker',2)")
         self.assertNotIn('family',self.actions(1))
 
-    def test_first_home_explains_use_without_extra_welcome_card(self):
+    def test_first_home_shows_tasks_and_setup_without_extra_welcome_card(self):
         self.db.execute('DELETE FROM members')
         b.on_start(self.db,{'id':1,'first_name':'Michael','language_code':'nl'},'')
         self.assertEqual(len(self.sent),1)
-        self.assertIn(b.tr('nl','first_home_walker'),self.sent[0][1])
+        self.assertIn('18:30',self.sent[0][1])
+        self.assertIn('21:45',self.sent[0][1])
+        self.assertEqual(len(self.sent[0][1].splitlines()),3)
+        self.assertTrue({'plan','more'}<=set(self.actions(1)))
         self.assertIn('Vandaag',self.sent[0][1])
         self.assertIn('family',self.actions(1))
         self.clock+=timedelta(days=1)

@@ -164,7 +164,7 @@ class SwapImpact(unittest.TestCase):
             for uid in (1, 2, 3):
                 text = b.swap_request_text(self.db, uid, 1, impact)
                 self.assertLess(len(text.encode('utf-16-le')) // 2, 4096, (lang, uid))
-                self.assertIn('31 gekozen dag(en)' if lang == 'nl' else '31 selected date(s)', text)
+                self.assertIn('31 gekozen dagen' if lang == 'nl' else '31 selected dates', text)
                 self.assertEqual(len(re.findall(r'^\d+/\d+ ·', text, re.MULTILINE)), 5)
                 visible_dates = []
                 for page in range(5):

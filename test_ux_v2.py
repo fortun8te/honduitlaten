@@ -35,7 +35,9 @@ class UXJourneys(unittest.TestCase):
 
     def test_primary_navigation_consistent_and_secondary_in_more(self):
         for uid in (1,2,3):
-            self.assertEqual(callbacks(b.menu_markup(self.db,uid)),['home','plan','points','more'])
+            self.assertEqual(callbacks(b.menu_markup(self.db,uid)),['home'])
+            self.assertTrue({'plan','more'}<=set(callbacks(b.home_view(self.db,uid)[1])))
+            self.assertTrue({'points','history'}<=set(callbacks(b.more_view(self.db,uid)[1])))
             self.assertLessEqual(len(b.menu_markup(self.db,uid)['inline_keyboard']),2)
             self.assertTrue({'help','language','family'} <= set(callbacks(b.more_view(self.db,uid)[1])))
 
@@ -100,7 +102,7 @@ class UXJourneys(unittest.TestCase):
         own=[entry for entry in self.sent if entry[0]==4]
         self.assertEqual(len(own),1)
         self.assertIn('Vandaag',own[0][1])
-        self.assertIn('home',callbacks(own[0][2]))
+        self.assertTrue({'plan','more'}<=set(callbacks(own[0][2])))
 
     def test_points_previous_month_and_recent_history_owner_boundaries(self):
         for day, chore, owner, status in [('2026-09-30','dogs',1,'done'),('2026-10-16','dogs',1,'done'),
@@ -115,7 +117,9 @@ class UXJourneys(unittest.TestCase):
         self.assertIn('correction:2026-10-17:dogs:undo',actions)
         self.assertIn('correction:2026-10-23:dishes:done',actions)
         self.assertFalse(any('2026-10-16' in action or '2026-10-22' in action for action in actions))
-        self.assertIn('+1',history)
+        labels=[button['text'] for row in kb['inline_keyboard'] for button in row]
+        self.assertTrue(any('✓' in label for label in labels))
+        self.assertEqual({row['id']:row['points'] for row in b.monthly_points(self.db,TIME.date())}[1],2)
 
     def test_navigation_helper_edits_without_new_chat_messages(self):
         for kind in ('more','family','history'):
@@ -128,7 +132,7 @@ class UXJourneys(unittest.TestCase):
         today=TIME.date()
         b.pending(self.db,2,700,{'type':'swap','from':1,'to':2,'owners':{str(today):b.owner(self.db,today,today)},'back':None})
         text,kb=b.home_view(self.db,2)
-        self.assertIn('Ruilverzoeken om te beantwoorden',text)
+        self.assertTrue(any(button['callback_data']=='requests' and '(1)' in button['text'] for row in kb['inline_keyboard'] for button in row))
         self.assertIn('requests',callbacks(kb))
         self.assertNotIn('Ruilverzoeken om te beantwoorden',b.home_view(self.db,1)[0])
 

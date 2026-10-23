@@ -182,7 +182,7 @@ class RequestInbox(unittest.TestCase):
             self.assertIn('swap_reply:100:accept',callbacks(kb))
             self.assertIn('swap_reply:100:no',callbacks(kb))
             self.assertIn('request_open:1:100',callbacks(kb))
-            self.assertIn('requests:0',callbacks(kb))
+            self.assertNotIn('requests:0',callbacks(kb))  # full pages return via Summary
             self.assertEqual(f'request_page:1:100:{page-1}' in callbacks(kb),page>0)
             self.assertEqual(f'request_page:1:100:{page+1}' in callbacks(kb),page<(len(self.impact)-1)//7)
             self.assertEqual(before,self.db.total_changes)

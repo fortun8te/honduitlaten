@@ -1,5 +1,9 @@
 # Flow review · 23 October 2026
 
+## Current layout
+
+The latest direction is deliberately minimal: normal Today has a date and two chore lines, one task action, Planning and More. Points and history sit under More. Ordinary focus sentences, first-day explanations and repeated menus were removed because they duplicated visible information. Important state and approval controls remain; long consequences are available in Details. This supersedes the earlier layout details below.
+
 ## Decision
 
 Make the next action and the consequences of a change obvious. Keep everyday completion quick; make occasional shared planning deliberate. This pass improves the existing Telegram flow rather than adding another interface or more reminder rules.

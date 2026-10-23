@@ -27,21 +27,23 @@ class FamilyUX(unittest.TestCase):
         self.db.execute('INSERT INTO off VALUES(?,?)', (1,str(DAY)))
         b.kv(self.db,'p_2_88', '{"type":"swap","owners":{"2026-10-23":1}}')
         text, kb = b.week_view(self.db, DAY, 'nl', uid=1)
-        self.assertEqual(text.count('🍽'), 8)
-        self.assertEqual(text.count('🐕'), 8)
+        self.assertEqual(text.count('🍽'), 7)
+        self.assertEqual(text.count('🐕'), 7)
         self.assertIn('19:10', text)
         self.assertIn('Christian', text)
         self.assertIn('Michael', text)
         self.assertIn(b.tr('nl','pending_status'), text)
         self.assertIn('home', actions(kb))
-        self.assertIn('more', actions(kb))
+        self.assertNotIn('more', actions(kb))
+        self.assertIn('more', actions(b.home_view(self.db,1)[1]))
         self.assertIn('help', actions(b.more_view(self.db,1)[1]))
 
     def test_week_is_compact_and_settled_day_has_no_edit_controls(self):
         text, _ = b.week_view(self.db, DAY, 'nl', uid=1)
-        self.assertLessEqual(len(text.splitlines()), 12)
-        self.assertEqual(text.count('18:30'), 1)
-        self.assertEqual(text.count('21:45'), 1)
+        self.assertLessEqual(len([line for line in text.splitlines() if line]), 8)
+        home, _ = b.home_view(self.db,1)
+        self.assertIn('18:30', home)
+        self.assertIn('21:45', home)
         for status in ('done', 'parent'):
             self.db.execute("REPLACE INTO nights(day,chore,walker,status) VALUES(?,'dogs',1,?)", (str(DAY),status))
             _, kb = b.night_view(self.db, 1, DAY, 0)
@@ -62,16 +64,17 @@ class FamilyUX(unittest.TestCase):
             self.assertEqual(seen, [DAY + timedelta(days=i) for i in range(31)])
             self.assertEqual(b.week_view(self.db, DAY, 'nl', page=99, uid=1), b.week_view(self.db, DAY, 'nl', page=4, uid=1))
 
-    def test_points_are_visible_without_dominating_today(self):
+    def test_points_remain_accessible_through_more_and_command(self):
         self.db.execute("INSERT INTO nights(day,chore,walker,status,done_at) VALUES(?,'dogs',1,'done','22:10')", (str(DAY),))
         home, kb = b.home_view(self.db, 1)
-        self.assertIn(b.tr('nl','points_own',points=1), home)
-        self.assertIn('points', actions(kb))
+        self.assertNotIn(b.tr('nl','points_own',points=1), home)
+        self.assertIn('more', actions(kb))
+        self.assertIn('points', actions(b.more_view(self.db,1)[1]))
         detail, _ = b.points_view(self.db, 1)
         self.assertIn('jij: 1', detail)
         self.assertIn('Christian: 0', detail)
         self.assertNotIn('Mum:', detail)
-        self.assertIn(b.tr('nl','points_rule'), detail)
+        self.assertIn('1 punt per afgeronde taak', b.help_view(self.db,1)[0])
         with patch.object(b,'send',return_value=99) as send:
             b.on_text(self.db,{'from':{'id':1},'chat':{'type':'private'},'text':'/points'})
         self.assertEqual(send.call_args.args[1], detail)
@@ -79,7 +82,7 @@ class FamilyUX(unittest.TestCase):
     def test_solo_walker_has_both_chores(self):
         self.db.execute('DELETE FROM members WHERE id=2')
         text, _ = b.night_view(self.db, 1, DAY, 0)
-        self.assertEqual(text.count('jij · gepland'), 2)
+        self.assertEqual(text.count(' · jij'), 2)
 
     def test_parent_can_read_day_without_changing_planning(self):
         self.db.execute("INSERT INTO nights(day,chore,walker,status) VALUES(?,'dogs',1,'on')",(str(DAY),))
@@ -87,7 +90,7 @@ class FamilyUX(unittest.TestCase):
         callbacks = actions(kb)
         self.assertFalse(any(c.split(':')[0] in ('noff','nin','ntake','nswap') for c in callbacks))
         self.assertIn('pcover:dogs:2026-10-23', callbacks)
-        self.assertIn('home', callbacks)
+        self.assertIn('wp:0', callbacks)
 
     def test_home_actions_bind_specific_date_and_owner(self):
         self.db.execute("INSERT INTO nights(day,chore,walker,status) VALUES(?,'dogs',1,'on')", (str(DAY),))
@@ -104,7 +107,9 @@ class FamilyUX(unittest.TestCase):
         self.db.execute("INSERT INTO nights(day,chore,walker,status,cover_id) VALUES(?,'dogs',NULL,'parent',3)", (str(DAY),))
         text, kb = b.home_view(self.db, 3)
         self.assertIn('Mum', text)
-        self.assertIn('nog te doen', text)
+        self.assertIn('neemt over', text)
+        self.assertNotIn('✅', text)
+        self.assertNotIn(3, {row['id'] for row in b.monthly_points(self.db, DAY)})
         self.assertIn('pdone:dogs:2026-10-23', actions(kb))
         self.assertNotIn('pdone:dogs:2026-10-23', actions(b.home_view(self.db,1)[1]))
 

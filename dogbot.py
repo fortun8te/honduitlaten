@@ -670,12 +670,18 @@ def lang_view(lang):
         {"text": ("✓ " if l == lang else "") + label, "callback_data": "lang:" + l}
         for l, label in zip(LANGS, ("English", "Nederlands"))]]}
 
-def menu_markup(db, uid):
+def back_markup(db, uid, target="home", text=None):
     lang = lang_of(db, uid)
-    return {"inline_keyboard": [[{"text": tr(lang, "b_" + key), "callback_data": callback}
-                                 for key, callback in (("home", "home"), ("plan", "plan"))],
-                                [{"text": tr(lang, "b_" + key), "callback_data": callback}
-                                 for key, callback in (("points", "points"), ("more", "more"))]]}
+    return {"inline_keyboard": [[{"text": text or tr(lang, "b_back"), "callback_data": target}]]}
+
+def menu_markup(db, uid):
+    """A quiet exit for receipts and older cards; full navigation belongs on Today."""
+    return back_markup(db, uid, "home", tr(lang_of(db, uid), "b_home"))
+
+S.update({"b_home": ("Today", "Vandaag"), "b_plan": ("Planning", "Planning"),
+          "b_done": ("Done", "Klaar"), "b_cant": ("Can't", "Kan niet"),
+          "b_pcover": ("I'll do it", "Ik doe het"),
+          "parent_status": ("taking over", "neemt over"), "waiting": ("open", "open")})
 
 def chore_status(db, uid, day, chore, assigned, lang):
     n = night(db, day, chore)
@@ -690,7 +696,8 @@ def chore_status(db, uid, day, chore, assigned, lang):
         return (person + " · " if person else "") + tr(lang, "parent_status")
     elif status == "missed": return tr(lang, "missed_status")
     elif status == "nobody": return "⚠️ " + tr(lang, "unassigned")
-    else: state = tr(lang, "waiting" if n else "planned")
+    elif not n: return who
+    else: state = tr(lang, "waiting")
     return f"{who} · {state}"
 
 
@@ -711,8 +718,7 @@ def week_view(db, today, lang="en", page=0, uid=None):
     rows = week(db, today, n=min(7, AHEAD - 7 * page), skip=7 * page)
     a, b = rows[0][0], rows[-1][0]
     span = f"{fmt(a, lang)} {month(a, lang)} – {fmt(b, lang)} {month(b, lang)}"
-    lines = [f"<b>{tr(lang, 'week', span=span)}</b>",
-             f"{tr(lang, 'dogs_label')} 21:45 · {tr(lang, 'dishes_label')} 18:30", ""]
+    lines = [f"<b>{tr(lang, 'week', span=span)}</b>"]
     walkers = members(db, "walker")
     if len(walkers) == 1: lines.append(tr(lang, "solo"))
     pending_days = {d for _, p in all_pending(db) if p.get("type") == "swap" for d in p.get("owners", {})}
@@ -731,7 +737,6 @@ def week_view(db, today, lang="en", page=0, uid=None):
         off = [html.escape(m["name"]) for m in walkers if is_off(db, m["id"], day)]
         if off: lines.append("  " + tr(lang, "off_status", names=", ".join(off)))
         if day.isoformat() in pending_days: lines.append("  " + tr(lang, "pending_status"))
-    lines.extend(["", tr(lang, "week_hint")])
     days = [{"text": fmt(d, lang), "callback_data": f"wk:{d}:{page}"} for d, _ in rows]
     nav = []
     if page > 0: nav.append({"text": tr(lang, "b_prev"), "callback_data": f"wp:{page - 1}"})
@@ -739,9 +744,10 @@ def week_view(db, today, lang="en", page=0, uid=None):
     keyboard = [days[i:i + 4] for i in range(0, len(days), 4)]
     if nav: keyboard.append(nav)
     if role_of(db, uid) == "walker":
-        keyboard.append([{"text": tr(lang, "b_availability"), "callback_data": "availability"},
-                         {"text": tr(lang, "b_requests"), "callback_data": "requests"}])
-    return "\n".join(lines), {"inline_keyboard": keyboard + menu_markup(db, uid)["inline_keyboard"]}
+        actions = [{"text": tr(lang, "b_availability"), "callback_data": "availability"}]
+        if visible_requests(db, uid): actions.append({"text": tr(lang, "b_requests"), "callback_data": "requests"})
+        keyboard.append(actions)
+    return "\n".join(lines), {"inline_keyboard": keyboard + back_markup(db, uid)["inline_keyboard"]}
 
 
 
@@ -764,10 +770,10 @@ def night_view(db, uid, day, page):
            for key, p in all_pending(db)):
         rows.append([{"text": tr(lang, "b_requests"), "callback_data": "requests"}])
     rows.append([{"text": tr(lang, "b_back"), "callback_data": f"wp:{page}"}])
-    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+    return "\n".join(lines), {"inline_keyboard": rows}
 
 
-def today_actions(db, uid, day, t):
+def today_actions(db, uid, day, t, compact=False):
     rows, lang = [], lang_of(db, uid)
     for chore in ("dishes", "dogs"):
         n = night(db, day, chore)
@@ -791,6 +797,8 @@ def today_actions(db, uid, day, t):
             rows.append([{"text": label + " · " + tr(lang, "b_done"), "callback_data": f"pdone:{chore}:{day}"}])
         elif role_of(db, uid) == "parent" and n["status"] in ("on", "nobody"):
             rows.append([{"text": label + " · " + tr(lang, "b_pcover"), "callback_data": f"pcover:{chore}:{day}"}])
+    if compact and day == t.date() and len(rows) == 1:
+        rows[0][0]["text"] = rows[0][0]["text"].rsplit(" · ", 1)[-1]
     return rows
 
 
@@ -869,33 +877,48 @@ def home_view(db, uid):
     waiting = sum(1 for key, request in all_pending(db)
                   if key.startswith(f"p_{uid}_") and request.get("type") == "swap" and swap_valid(db, request, t))
     focus, previous = home_focus(db, uid, t, waiting)
-    lines = [f"<b>{tr(lang, 'today', day=fmt(day, lang))}</b>", focus, ""]
+    lines = []
     rows = []
     if previous:
         lines.extend([f"<b>{fmt(previous, lang)} {month(previous, lang)}</b>"] + day_details(db, uid, previous, None, lang) + [""])
         rows.extend(today_actions(db, uid, previous, t))
+    lines.append(f"<b>{tr(lang, 'today', day=fmt(day, lang))}</b>")
     lines.extend(day_details(db, uid, day, dog, lang))
-    rows.extend(today_actions(db, uid, day, t))
+    rows.extend(today_actions(db, uid, day, t, compact=not previous))
     if waiting:
-        if previous: lines.extend(["", tr(lang, "requests_waiting", count=waiting)])
-        rows.append([{"text": tr(lang, "b_requests"), "callback_data": "requests"}])
+        rows.append([{"text": tr(lang, "b_requests") + f" ({waiting})", "callback_data": "requests"}])
     if len(members(db, "walker")) == 1:
-        lines.extend(["", tr(lang, "focus_setup" if uid == OWNER_ID else "solo")])
+        if uid != OWNER_ID: lines.extend(["", tr(lang, "solo")])
         if uid == OWNER_ID: rows.append([{"text": tr(lang, "b_invite"), "callback_data": "family"}])
-    joined = col(db, uid, "joined")
-    if joined is not None and 0 <= t.timestamp() - joined < 86400:
-        lines.extend(["", tr(lang, "first_home_parent" if role_of(db, uid) == "parent" else "first_home_walker")])
-    score = next((r["points"] for r in monthly_points(db, day) if r["id"] == uid), 0)
-    lines.extend(["", tr(lang, "points_own", points=score)])
-    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+    rows.append([{"text": tr(lang, "b_plan"), "callback_data": "plan"},
+                 {"text": tr(lang, "b_more"), "callback_data": "more"}])
+    return "\n".join(lines), {"inline_keyboard": rows}
 
 
 def help_view(db, uid):
-    lang = lang_of(db, uid)
-    text = tr(lang, "help_parent" if role_of(db, uid) == "parent" else "help_walker")
-    if role_of(db, uid) == "walker": text += "\n\n" + tr(lang, "swap_scope")
-    text += "\n\n" + tr(lang, "points_rule")
-    return text, menu_markup(db, uid)
+    if role_of(db, uid) == "parent":
+        text = local_text(db, uid,
+            "Planning: 30 days ahead. Dishes 18:30; dogs 21:45.\n"
+            "Unconfirmed: alerts at 21:00 for dishes, 23:00 for dogs.\n"
+            "Take over if you can. Tap Done after finishing.\n"
+            "1 point per completed chore. Correct the last 7 days via More → My recent chores.",
+            "Planning: 30 dagen vooruit. Afwas 18:30; honden 21:45.\n"
+            "Onbevestigd: melding om 21:00 voor afwas, 23:00 voor honden.\n"
+            "Neem over als je kunt. Tik na afloop op Klaar.\n"
+            "1 punt per afgeronde taak. Corrigeer de laatste 7 dagen via Meer → Mijn recente taken.")
+    else:
+        text = local_text(db, uid,
+            "Dishes 18:30 · Dogs 21:45.\n"
+            "Done confirms completion. Can't passes only that chore.\n"
+            "Pass dishes before 21:00; dogs before 23:00.\n"
+            "Planning: 30 days ahead. Swaps need the other person's acceptance.\n"
+            "1 point per completed chore. Correct the last 7 days via More → My recent chores.",
+            "Afwas 18:30 · Honden 21:45.\n"
+            "Klaar bevestigt je taak. Kan niet geeft alleen die taak door.\n"
+            "Doorgeven: afwas tot 21:00; honden tot 23:00.\n"
+            "Planning: 30 dagen vooruit. Ruilen vraagt akkoord van de ander.\n"
+            "1 punt per afgeronde taak. Corrigeer de laatste 7 dagen via Meer → Mijn recente taken.")
+    return text, back_markup(db, uid, "more")
 
 
 def points_view(db, uid, previous=False):
@@ -905,19 +928,20 @@ def points_view(db, uid, previous=False):
     for member in monthly_points(db, day):
         label = tr(lang, "you") if member["id"] == uid else member["name"]
         lines.append(tr(lang, "points_total", name=label, points=member["points"]))
-    lines.extend(["", tr(lang, "points_rule")])
     rows = [[{"text": tr(lang, "b_this_month" if previous else "b_last_month"),
               "callback_data": "points_month:current" if previous else "points_month:previous"}],
             [{"text": tr(lang, "b_history"), "callback_data": "history"}]]
-    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+    return "\n".join(lines), {"inline_keyboard": rows + back_markup(db, uid, "more")["inline_keyboard"]}
 
 
 def more_view(db, uid):
     lang = lang_of(db, uid)
-    rows = [[{"text": tr(lang, "b_help"), "callback_data": "help"},
+    rows = [[{"text": tr(lang, "b_points"), "callback_data": "points"},
+             {"text": tr(lang, "b_history"), "callback_data": "history"}],
+            [{"text": tr(lang, "b_family"), "callback_data": "family"},
              {"text": tr(lang, "b_language"), "callback_data": "language"}],
-            [{"text": tr(lang, "b_family"), "callback_data": "family"}]]
-    return tr(lang, "more_title"), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+            [{"text": tr(lang, "b_help"), "callback_data": "help"}]]
+    return tr(lang, "more_title"), {"inline_keyboard": rows + back_markup(db, uid)["inline_keyboard"]}
 
 
 def family_view(db, uid):
@@ -939,26 +963,24 @@ def family_view(db, uid):
                 lines.extend(["", tr(lang, "family_" + role + "_link"), f"https://t.me/{username}?start={role}_{code}"])
             rows.append([{"text": tr(lang, "b_rotate_links"), "callback_data": "rotate_links"}])
     elif any(remaining): lines.extend(["", tr(lang, "family_owner")])
-    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+    return "\n".join(lines), {"inline_keyboard": rows + back_markup(db, uid, "more")["inline_keyboard"]}
 
 
 def history_view(db, uid):
     today, lang = now().date(), lang_of(db, uid)
     records = db.execute("SELECT * FROM nights WHERE day>=? AND day<=? AND COALESCE(walker,cover_id)=? ORDER BY day DESC, chore",
                          ((today - timedelta(days=6)).isoformat(), today.isoformat(), uid)).fetchall()
-    lines, rows = [tr(lang, "history_title"), ""], []
+    lines, rows = [tr(lang, "history_title")], []
     for record in records:
         day, chore = date.fromisoformat(record["day"]), record["chore"]
         label = f"{fmt(day, lang)} {month(day, lang)} · {tr(lang, chore + '_label')}"
         done = record["status"] == "done"
-        status = tr(lang, "done_status", time=record["done_at"] or "").strip() + " · +1" if done else tr(lang, "history_open")
-        lines.append(label + " · " + status)
+        status = "✓ " + local_text(db, uid, "done", "klaar") if done else tr(lang, "history_open")
         correction = "undo" if done else "done"
-        rows.append([{"text": label + " · " + tr(lang, "b_undo_done" if done else "b_fix_done"),
+        rows.append([{"text": label + " · " + status,
                       "callback_data": f"correction:{day}:{chore}:{correction}"}])
-    if not records: lines.append(tr(lang, "history_empty"))
-    else: lines.extend(["", tr(lang, "history_hint")])
-    return "\n".join(lines), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+    lines.extend(["", tr(lang, "history_hint" if records else "history_empty")])
+    return "\n".join(lines), {"inline_keyboard": rows + back_markup(db, uid, "more")["inline_keyboard"]}
 
 
 def handle_ui_button(db, uid, kind, arg, chat, msg, answer):
@@ -1516,19 +1538,17 @@ def av_impact(db, uid, proposal, t):
 
 
 def av_impact_text(db, uid, proposal, impact, t):
-    """A short decision summary, with optional seven-row pages of the saved impact."""
-    lang = lang_of(db, uid)
-    nl = lang == "nl"
+    """Only the decision on the summary; supporting context stays in Details."""
+    lang, nl = lang_of(db, uid), lang_of(db, uid) == "nl"
     selected = [item for item in impact if item["selected"]]
     later = [item for item in impact if not item["selected"]]
     page = proposal.get("impact_page")
-    detailed = page is not None
     pages = max(1, (len(impact) + 6) // 7)
+    detailed = page is not None
     if detailed:
         page = min(max(int(page), 0), pages - 1)
         visible = impact[page * 7:page * 7 + 7]
-    else:
-        visible = selected[:5]
+    else: visible = selected[:5]
     def span(items):
         first, last = [date.fromisoformat(items[i]["day"]) for i in (0, -1)]
         left = f"{first.day}/{first.month}"
@@ -1540,46 +1560,29 @@ def av_impact_text(db, uid, proposal, impact, t):
         if len(text.encode("utf-16-le")) // 2 > 20:
             text = text.encode("utf-16-le")[:38].decode("utf-16-le", errors="ignore") + "…"
         return text
-    lines = [av_text(lang, proposal["mode"]),
-             "Voor honden en afwas · nu → na opslaan" if nl else "Dogs and dishes · now → after saving"]
-    lines.append((f"{len(selected)} gekozen dagen · {len(later)} andere dagen wijzigen" if nl else
-                  f"{len(selected)} selected dates · {len(later)} other dates change"))
-    if detailed:
-        lines.extend(["", f"Alle dagen · {page + 1}/{pages}" if nl else f"All dates · {page + 1}/{pages}"])
-    else:
-        lines.extend(["", "Gekozen dagen" if nl else "Selected dates"])
-    markers = set()
+    count = len(selected)
+    title = av_text(lang, proposal["mode"]) + (f" · {count} {'dag' if count == 1 else 'dagen'}" if nl else f" · {count} {'day' if count == 1 else 'days'}")
+    lines = [title]
+    if detailed: lines.append(f"Details · {page + 1}/{pages}")
+    lines.append("")
     for item in visible:
         parts = []
         for chore, icon in (("dogs", "🐕"), ("dishes", "🍽")):
             before, after = item["before"][chore], item["after"][chore]
-            if before["person"] == after["person"]:
-                text = "=" + label(after["person"]); markers.add("=")
-            else:
-                text = label(before["person"]) + "→" + label(after["person"])
-            mark = "✓" if after["status"] == "done" else "🙋" if after["status"] == "parent" else "⌛" if after["closed"] else "📩" if after["delivered"] else None
-            if mark:
-                text += " " + mark; markers.add(mark)
+            text = label(after["person"]) if before["person"] == after["person"] else label(before["person"]) + " → " + label(after["person"])
+            if after["status"] == "done": text += " ✓"
+            elif detailed and after["status"] == "parent": text += " (neemt over)" if nl else " (covering)"
             parts.append(icon + " " + text)
-        d = date.fromisoformat(item["day"])
-        qualifier = (" [gekozen]" if nl else " [selected]") if detailed and item["selected"] else ""
-        lines.append(f"{d.day}/{d.month}{qualifier} " + " · ".join(parts))
+        day = date.fromisoformat(item["day"])
+        lines.append(f"{day.day}/{day.month} · " + " · ".join(parts))
     if not detailed and len(selected) > 5:
         remaining = selected[5:]
-        lines.append(f"+ {len(remaining)} gekozen dagen ({span(remaining)})" if nl else
-                     f"+ {len(remaining)} more selected dates ({span(remaining)})")
+        lines.append(f"+ {len(remaining)} gekozen dagen ({span(remaining)})" if nl else f"+ {len(remaining)} selected dates ({span(remaining)})")
     if not detailed and later:
-        lines.extend(["", (f"Ook gewijzigd in de planning: {len(later)} dagen ({span(later)})." if nl else
-                            f"Also changes in the rota: {len(later)} dates ({span(later)}).")])
-    if later:
-        lines.append("Overnemen telt als een beurt; daardoor schuift de latere planning mee." if nl else
-                     "Covering a walk counts as a turn, so later dates shift too.")
-    legend = {"=": "ongewijzigd" if nl else "unchanged", "📩": "verstuurd" if nl else "sent",
-              "✓": "klaar" if nl else "done", "🙋": "ouder" if nl else "parent", "⌛": "te laat" if nl else "past cutoff"}
-    if markers:
-        lines.extend(["", " · ".join(mark + " " + legend[mark] for mark in legend if mark in markers)])
-    if t.date().isoformat() in proposal["selected"]: lines.append(av_text(lang, "today"))
-    lines.append("Nog niet opgeslagen." if nl else "Not saved yet.")
+        lines.extend(["", f"Ook {len(later)} latere dagen wijzigen ({span(later)})." if nl else f"Also changes {len(later)} later dates ({span(later)})."])
+    if detailed:
+        if later: lines.extend(["", "Overnemen telt als een beurt; latere dagen schuiven mee." if nl else "Covering counts as a turn, so later dates shift too."])
+        if t.date().isoformat() in proposal["selected"]: lines.append(av_text(lang, "today"))
     return "\n".join(lines)
 
 
@@ -1601,12 +1604,14 @@ def av_view(db, uid, proposal):
             if page: nav.append({"text": "←", "callback_data": f"av:details:{page - 1}"})
             if page + 1 < pages: nav.append({"text": "→", "callback_data": f"av:details:{page + 1}"})
             if nav: rows.append(nav)
-            rows.append([{"text": "← Naar overzicht" if lang == "nl" else "← Back to summary", "callback_data": "av:summary"}])
+            rows.append([{"text": save, "callback_data": "av:confirm"},
+                         {"text": "← Overzicht" if lang == "nl" else "← Summary", "callback_data": "av:summary"}])
         elif len(impact) > 5 or any(not item["selected"] for item in impact):
-            rows.append([{"text": f"Bekijk alle {len(impact)} dagen" if lang == "nl" else f"View all {len(impact)} dates", "callback_data": "av:details:0"}])
-        rows.extend([[{"text": save, "callback_data": "av:confirm"}],
-                [{"text": av_text(lang, "back"), "callback_data": "av:back"},
-                 {"text": av_text(lang, "cancel"), "callback_data": "av:cancel"}]])
+            rows.append([{"text": f"Details ({len(impact)})", "callback_data": "av:details:0"}])
+        if proposal.get("impact_page") is None:
+            rows.insert(0, [{"text": save, "callback_data": "av:confirm"}])
+            rows.append([{"text": "Dagen wijzigen" if lang == "nl" else "Change dates", "callback_data": "av:back"},
+                         {"text": av_text(lang, "cancel"), "callback_data": "av:cancel"}])
     else:
         lines = [av_text(lang, "title"), av_text(lang, mode), "", av_text(lang, "legend")]
         rows = [[{"text": ("✓ " if mode == value else "") + av_text(lang, value),
@@ -1892,7 +1897,7 @@ def private_review(db, uid, text, data, confirm, cancel):
     keyboard = {"inline_keyboard": [[{"text": local_text(db, uid, yes_en, yes_nl), "callback_data": confirm},
                                       {"text": local_text(db, uid, no_en, no_nl), "callback_data": cancel}]]}
     if data.get("type") == "request_preview" and impact_needs_details(data.get("impact", [])):
-        keyboard["inline_keyboard"].insert(0, [{"text": local_text(db, uid, "View all changes", "Alle wijzigingen bekijken"),
+        keyboard["inline_keyboard"].insert(0, [{"text": "Details",
                                                "callback_data": "request_preview_details:0"}])
     msg = send(uid, text, keyboard)
     if msg:
@@ -1936,12 +1941,12 @@ def swap_impact_text(db, uid, impact, page=None):
             value = " ".join(name(db, person).split())
             encoded = value.encode("utf-16-le")
             return encoded[:2 * (limit - 1)].decode("utf-16-le", errors="ignore") + "…" if len(encoded) > limit * 2 else value
-        lines = ["Nu → na akkoord" if nl else "Now → after acceptance"]
+        lines = []
         selected = [item for item in impact if item["selected"]]
         later = [item for item in impact if not item["selected"]]
         if page is None:
             entries = selected[:5]
-            lines.append(f"{len(selected)} gekozen dag(en)" if nl else f"{len(selected)} selected date(s)")
+            if len(selected) > 5: lines.append(f"{len(selected)} gekozen dagen" if nl else f"{len(selected)} selected dates")
         else:
             page_number = min(max(0, page), max(0, (len(impact) - 1) // 7))
             entries = impact[page_number * 7:page_number * 7 + 7]
@@ -1963,9 +1968,9 @@ def swap_impact_text(db, uid, impact, page=None):
             if later:
                 first, last = date.fromisoformat(later[0]["day"]), date.fromisoformat(later[-1]["day"])
                 span = f"{first.day}/{first.month}–{last.day}/{last.month}"
-                lines.extend(["", f"Ook {len(later)} latere dagen veranderen ({span})." if nl else f"Also changes {len(later)} later dates ({span}).",
-                              "Overnemen telt mee als beurt. Bekijk alle wijzigingen voor het volledige overzicht." if nl else "Covering counts as a turn. View all changes for the full plan."])
-            else: lines.append("Andere dagen blijven gelijk." if nl else "Other dates stay the same.")
+                lines.extend(["", f"Ook {len(later)} latere dagen wijzigen ({span})." if nl else f"Also changes {len(later)} later dates ({span})."])
+        elif later:
+            lines.extend(["", "Overnemen telt als een beurt; latere dagen schuiven mee." if nl else "Covering counts as a turn, so later dates shift too."])
         return "\n".join(lines)
     for limit in (20, 16, 12):
         text = render(limit)
@@ -1973,14 +1978,14 @@ def swap_impact_text(db, uid, impact, page=None):
     return text
 
 def swap_response_buttons(db, uid):
-    return {"inline_keyboard": [[{"text": local_text(db, uid, "View full proposal", "Volledig voorstel bekijken"), "callback_data": "request_details"}],
+    return {"inline_keyboard": [[{"text": "Details", "callback_data": "request_details"}],
                                   [{"text": local_text(db, uid, "Accept swap", "Ruil accepteren"), "callback_data": "accept"},
                                    {"text": local_text(db, uid, "Keep current plan", "Planning behouden"), "callback_data": "no"}]]}
 
 def swap_request_text(db, uid, requester, impact, page=None):
     person = " ".join(name(db, requester).split())[:40]
-    return local_text(db, uid, f"{person} asks to change the plan.\n\n", f"{person} vraagt om de planning te wijzigen.\n\n") + \
-        swap_impact_text(db, uid, impact, page=page) + "\n\n" + local_text(db, uid, "Only changes if you accept.", "Verandert alleen als jij akkoord gaat.")
+    return local_text(db, uid, f"Swap request · {person}\n\n", f"Ruilverzoek van {person}\n\n") + \
+        swap_impact_text(db, uid, impact, page=page)
 
 def request_name(db, uid, limit=32):
     """Keep inbox summaries bounded even with unusually long Telegram names."""
@@ -2040,7 +2045,7 @@ def requests_view(db, uid):
     if page: nav.append({"text": local_text(db, uid, "◀ Previous", "◀ Vorige"), "callback_data": f"requests:{page - 1}"})
     if page + 1 < pages: nav.append({"text": local_text(db, uid, "Next ▶", "Volgende ▶"), "callback_data": f"requests:{page + 1}"})
     if nav: rows.append(nav)
-    return "\n".join(lines).strip(), {"inline_keyboard": rows + menu_markup(db, uid)["inline_keyboard"]}
+    return "\n".join(lines).strip(), {"inline_keyboard": rows + back_markup(db, uid, "plan")["inline_keyboard"]}
 
 
 def request_detail_view(db, uid):
@@ -2087,8 +2092,8 @@ def request_detail_view(db, uid):
                     nav.append({"text": local_text(db, uid, "Next ▶", "Volgende ▶"),
                                 "callback_data": f"request_page:{recipient}:{source}:{impact_page + 1}"})
                 if nav: rows.append(nav)
-                rows.append([{"text": local_text(db, uid, "← Summary", "← Samenvatting"),
-                              "callback_data": f"request_open:{recipient}:{source}"}])
+                back = [{"text": local_text(db, uid, "← Summary", "← Samenvatting"),
+                         "callback_data": f"request_open:{recipient}:{source}"}]
             if recipient == uid:
                 rows.append([{"text": local_text(db, uid, "Accept swap", "Ruil accepteren"), "callback_data": f"swap_reply:{source}:accept"},
                              {"text": local_text(db, uid, "Keep current plan", "Planning behouden"), "callback_data": f"swap_reply:{source}:no"}])
@@ -2097,7 +2102,7 @@ def request_detail_view(db, uid):
                               "Dit oudere verzoek heeft geen opgeslagen overzicht. Vraag een nieuw verzoek voordat je akkoord gaat.")
         if uid == request["from"] and uid != recipient:
             rows.append([{"text": local_text(db, uid, "Withdraw request", "Verzoek intrekken"), "callback_data": f"withdraw:{recipient}:{source}"}])
-    return text, {"inline_keyboard": rows + [back] + menu_markup(db, uid)["inline_keyboard"]}
+    return text, {"inline_keyboard": rows + [back]}
 
 
 def on_open_request(db, uid, recipient, source, msg, answer):
@@ -2152,13 +2157,13 @@ def handle_request_button(db, uid, kind, arg, chat, msg, answer):
         text = swap_impact_text(db, uid, p["impact"], page=page)
         rows = []
         if page is None:
-            if impact_needs_details(p["impact"]): rows.append([{"text": local_text(db, uid, "View all changes", "Alle wijzigingen bekijken"), "callback_data": "request_preview_details:0"}])
+            if impact_needs_details(p["impact"]): rows.append([{"text": "Details", "callback_data": "request_preview_details:0"}])
         else:
             nav = []
             if page > 0: nav.append({"text": "←", "callback_data": f"request_preview_details:{page - 1}"})
             if (page + 1) * 7 < len(p["impact"]): nav.append({"text": "→", "callback_data": f"request_preview_details:{page + 1}"})
             if nav: rows.append(nav)
-            rows.append([{"text": local_text(db, uid, "Back to summary", "Terug naar overzicht"), "callback_data": "request_preview_summary"}])
+            rows.append([{"text": local_text(db, uid, "← Summary", "← Overzicht"), "callback_data": "request_preview_summary"}])
         rows.append([{"text": local_text(db, uid, "Send request", "Verzoek versturen"), "callback_data": "request_confirm"},
                      {"text": local_text(db, uid, "Keep plan", "Planning behouden"), "callback_data": "request_cancel"}])
         text += "\n\n" + local_text(db, uid, "Sending asks the other walker. The plan changes only after acceptance.", "Versturen vraagt de andere loper. De planning verandert pas na akkoord.")

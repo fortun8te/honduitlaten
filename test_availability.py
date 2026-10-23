@@ -164,12 +164,14 @@ class AvailabilityTests(unittest.TestCase):
         self.tap('confirm')
         self.assertEqual(self.db.execute('SELECT count(*) FROM off').fetchone()[0], 0)
 
-    def test_single_date_review_explains_scope_and_cutoffs(self):
+    def test_single_date_review_shows_both_tasks_and_help_retains_cutoffs(self):
         b.open_availability(self.db, 1, days=[TODAY], mode='on', review=True)
         text = self.send.call_args.args[1]
-        self.assertIn('honden en afwas', text)
-        self.assertIn('21:00', text)
-        self.assertIn('23:00', text)
+        self.assertIn('🐕', text)
+        self.assertIn('🍽', text)
+        help_text, _ = b.help_view(self.db, 1)
+        self.assertIn('21:00', help_text)
+        self.assertIn('23:00', help_text)
         self.assertEqual(self.proposal()['mode'], 'on')
         self.assertEqual(self.proposal()['stage'], 'review')
         self.assertFalse(b.is_off(self.db, 1, TODAY))

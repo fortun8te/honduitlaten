@@ -40,6 +40,8 @@ Run `install` as your normal Pi user, **without sudo**. It requests sudo only fo
 
 ## Everyday family flow
 
+The everyday screen is intentionally small: two chore lines, Done, Planning and More. Points, history, family and settings are under More. Secondary screens use a single contextual Back button.
+
 1. The owner taps **Start** and opens **Family** or `/invite` to get the walker and parent invite links. Reopening this screen keeps the same links. Only the owner's explicit **Replace links** confirmation invalidates old links; existing family members remain joined.
 2. Share each link only with the intended person. There are two walker places and two parent places.
 3. **Today** starts with your next responsibility, a missing confirmation, a request needing your reply, or a clear message that your work is finished. Both household chores and their current owners remain visible underneath. Before 03:00, unfinished work from the previous evening takes priority over the new day. Parents see whether cover is needed, work is assigned, or completion is confirmed. You can mark your own task done before its reminder. **Planning** shows a compact month-ahead rota in weekly pages, with separate actions for availability and swaps.
@@ -56,7 +58,7 @@ Typed availability changes use the same private review and confirmation flow. A 
 
 Parent alerts and correction notices are saved and retried after a restart; stale queued notices are cancelled when the work changes. Parent coverage, both-walkers-unavailable days and outages preserve the rota's history so later dates do not randomly switch. After an overnight outage, the bot reports **unconfirmed work**, without claiming it was never done.
 
-**Points stay simple:** each completed dog walk or dish task earns one point for the person who did it. Today shows your current-month total; **Points** shows family totals, a previous-month view and a link to History. Parent takeovers count only after completion. Repeated taps never add extra points. Completing or correcting after midnight credits the scheduled chore date, including at month end. Undoing a completion removes that task's point. Points are informational and do not change the rota or create penalties. Existing completion history contributes automatically.
+**Points stay simple:** each completed dog walk or dish task earns one point for the person who did it. **Points**, under More, shows family totals, a previous-month view and a link to History. Parent takeovers count only after completion. Repeated taps never add extra points. Completing or correcting after midnight credits the scheduled chore date, including at month end. Undoing a completion removes that task's point. Points are informational and do not change the rota or create penalties. Existing completion history contributes automatically.
 
 The bot keeps its schedule and membership in `dogbot.db` across restarts. An invite link is not a public sign-up link; don't post it publicly. Use the current in-chat help/menu for the available shortcuts.
 

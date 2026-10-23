@@ -376,7 +376,7 @@ class Round7(Base):
         self.assertIn("Today", self.sent[0][1])
         self.assertIn("18:30", self.sent[-1][1])
         self.assertIn("21:45", self.sent[-1][1])
-        self.assertIn(b.tr("en", "focus_setup"), self.sent[-1][1])
+        self.assertIn("family", [button["callback_data"] for row in b.home_view(db, 5)[1]["inline_keyboard"] for button in row])
 
 class Round6(Base):
     def test_pass_respects_other_walkers_unavailability(self):
@@ -441,8 +441,8 @@ class Week(Base):
         k = kb["inline_keyboard"]
         self.assertEqual(([len(r) for r in k[:3]], k[0][1]), ([4, 3, 1], {"text": b.fmt(D(16)), "callback_data": "wk:2026-10-16:0"}))
         self.assertEqual(k[2][0]["callback_data"], "wp:1")
-        self.assertEqual(k[-2:], b.menu_markup(self.db, 1)["inline_keyboard"])
-        self.assertEqual([x["callback_data"] for x in k[3]], ["availability", "requests"])
+        self.assertEqual([x["callback_data"] for x in k[-2]], ["availability"])
+        self.assertEqual([x["callback_data"] for x in k[-1]], ["home"])
         self.assertEqual(b.week_view(self.db, T, page=1)[1]["inline_keyboard"][2][0]["callback_data"], "wp:0")
     def test_marks(self):
         self.off(2, D(16))
@@ -738,7 +738,7 @@ class Language(Base):
         self.tap(1, "wk:2026-10-16:0")  # Michael's night: off / swap / back
         kb = marks[-1]["inline_keyboard"]
         self.assertEqual([[x["callback_data"] for x in r] for r in kb[:2]], [["noff:2026-10-16:0", "nswap:2026-10-16:0"], ["wp:0"]])
-        self.assertEqual(kb[2:], b.menu_markup(self.db, 1)["inline_keyboard"])
+        self.assertEqual(len(kb), 2)  # relevant actions and Back to the planning page only
         self.tap(1, "noff:2026-10-16:0")
         self.assertFalse(b.is_off(self.db, 1, D(16)))
         self.tap(1, "av:confirm", msg=100 + len(self.sent))
