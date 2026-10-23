@@ -84,9 +84,19 @@ class RequestsCorrections(unittest.TestCase):
         self.live(); source = self.request()
         for uid, expected in ((1, f'withdraw:2:{source}'), (2, f'swap_reply:{source}:accept')):
             _, kb = b.requests_view(self.db, uid)
-            self.assertIn(expected, [x['callback_data'] for r in kb['inline_keyboard'] for x in r])
+            callbacks = [x['callback_data'] for r in kb['inline_keyboard'] for x in r]
+            self.assertIn(f'request_open:2:{source}', callbacks)
+            self.assertNotIn(expected, callbacks)
+            self.tap(uid, f'request_open:2:{source}', msg=900 + uid)
+            detail = [x['callback_data'] for r in self.edits[-1][3]['inline_keyboard'] for x in r]
+            self.assertIn(expected, detail)
+            if uid == 1:
+                self.assertFalse(any(x.startswith('swap_reply:') for x in detail))
+            else:
+                self.assertFalse(any(x.startswith('withdraw:') for x in detail))
+            self.assertEqual(b.night(self.db, self.day)['walker'], 1)
         _, kb = b.requests_view(self.db, 3)
-        self.assertFalse([x for r in kb['inline_keyboard'] for x in r if x['callback_data'].startswith(('withdraw:', 'swap_reply:'))])
+        self.assertFalse([x for r in kb['inline_keyboard'] for x in r if x['callback_data'].startswith(('request_open:', 'withdraw:', 'swap_reply:'))])
 
     def test_withdrawal_requires_private_confirmation_then_invalidates_accept(self):
         self.live(); source = self.request()

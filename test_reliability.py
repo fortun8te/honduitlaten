@@ -77,6 +77,10 @@ class Reliability(unittest.TestCase):
         b.pending(self.db, 2, 222, {'type': 'swap', 'from': 1, 'to': 2, 'back': None,
                                   'owners': {str(self.day): 1}})
         self.tap(2, 'accept', 222)
+        self.assertEqual(b.night(self.db, self.day)['walker'], 1)
+        self.assertEqual(b.night(self.db, self.day, 'dishes')['walker'], 2)
+        self.assertIsNotNone(self.pending(2, 222).get('impact'))
+        self.tap(2, 'accept', 222)
         self.assertEqual(b.night(self.db, self.day)['walker'], 2)
         self.assertEqual(b.night(self.db, self.day, 'dishes')['walker'], 1)
         self.assertIsNone(self.pending(2, 222))

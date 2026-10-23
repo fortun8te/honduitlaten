@@ -139,7 +139,8 @@ class Round4(Base):
     def test_preview_months_when_spanning(self):
         b.now = lambda: self.at(date(2026, 10, 25), 12)
         self.text(1, "not 31 oct - 1 nov")
-        self.assertIn("Sat 31 Oct, Sun 1 Nov", self.sent[-1][1])
+        self.assertIn("31/10", self.sent[-1][1])
+        self.assertIn("1/11", self.sent[-1][1])
         self.assertFalse(b.is_off(self.db, 1, date(2026, 10, 31)))
     def test_month_planning_limit(self):
         self.text(1, "away 15 nov")
@@ -375,7 +376,7 @@ class Round7(Base):
         self.assertIn("Today", self.sent[0][1])
         self.assertIn("18:30", self.sent[-1][1])
         self.assertIn("21:45", self.sent[-1][1])
-        self.assertIn(b.tr("en", "solo"), self.sent[-1][1])
+        self.assertIn(b.tr("en", "focus_setup"), self.sent[-1][1])
 
 class Round6(Base):
     def test_pass_respects_other_walkers_unavailability(self):
@@ -492,14 +493,16 @@ class Week(Base):
         self.assertEqual(b.all_pending(self.db), [])
     def test_swap_accepted(self):
         recipient, request = self.request_swap(1, D(16))
-        self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_give", name="Michael", day="Fri 16")))
+        self.assertEqual(self.sent[-1][0], 2)
+        self.assertIn("16/10 · 🐕 you → Michael · 🍽 Michael → you", self.sent[-1][1])
         self.assertEqual(self.plan(2)[1], 2)  # nothing changes until accepted
         self.tap(2, "accept", msg=100 + len(self.sent))
         self.assertEqual(self.plan(), [1, 1, 2, 1, 2, 1, 2])
         self.assertIn((1, "👍 Christian said yes, Fri 16 goes to Michael"), self.sent)
     def test_swap_declined(self):
         recipient, request = self.request_swap(1, T)
-        self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_take", name="Michael", day="Thu 15")))
+        self.assertEqual(self.sent[-1][0], 2)
+        self.assertIn("15/10 · 🐕 Michael → you · 🍽 you → Michael", self.sent[-1][1])
         self.tap(2, "no", msg=100 + len(self.sent))
         self.assertEqual((self.plan(1), self.sent[-1]), ([1], (1, "Christian said no to Thu 15")))
     def test_swap_moves_live_message(self):
@@ -633,7 +636,7 @@ class Chat(Base):
     def test_off_day_preview(self):
         self.text(2, "not fri")
         self.assertEqual(self.sent[-1][0], 2)
-        self.assertIn("Fri 16", self.sent[-1][1])
+        self.assertIn("16/10", self.sent[-1][1])
         self.assertFalse(b.is_off(self.db, 2, D(16)))
         self.assertEqual(self.plan(2)[1], 2)  # not saved yet
         self.tap(2, "av:confirm", msg=self.last())
@@ -644,7 +647,10 @@ class Chat(Base):
         self.text(1, "he does the weekend")
         self.assertEqual(self.sent[-1][1], "Christian walks: Sat 17, Sun 18")
         self.tap(1, "confirm", msg=self.last())
-        self.assertEqual(self.sent[-1], (2, b.tr("en", "ask_take", name="Michael", day="Sat 17")))  # Sun skipped, he's off
+        self.assertEqual(self.sent[-1][0], 2)
+        self.assertIn("17/10 · 🐕 Michael → you · 🍽 you → Michael", self.sent[-1][1])
+        request = b.peek_pending(self.db, 2, self.last())
+        self.assertEqual(list(request["owners"]), ["2026-10-17"])  # Sun skipped: he is off
         self.assertEqual(self.plan(3)[2], 1)  # nothing until he accepts
         self.tap(2, "accept", msg=self.last())
         self.assertEqual(self.plan(3)[2], 2)
@@ -716,7 +722,7 @@ class Language(Base):
         self.assertIn(b.tr("nl", "today", day=b.fmt(T, "nl")), self.edits[-1][2])
         self.text(2, "kan niet vrijdag")  # parser stays bilingual
         self.assertEqual(self.sent[-1][0], 2)
-        self.assertIn("Vr 16", self.sent[-1][1])
+        self.assertIn("16/10", self.sent[-1][1])
         self.assertEqual(b.peek_pending(self.db, 2, 100 + len(self.sent))["mode"], "off")
     def test_bad_lang_falls_back(self):
         self.tap(2, "lang:xx")
